@@ -759,6 +759,7 @@ bool wlr_output_commit_state(struct wlr_output *output,
 		output_clear_back_buffer(output);
 	}
 
+	// call commit impl
 	if (!output->impl->commit(output, &pending)) {
 		wlr_buffer_unlock(back_buffer);
 		if (new_back_buffer) {

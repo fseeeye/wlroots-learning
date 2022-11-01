@@ -113,11 +113,13 @@ struct wlr_drm_connector {
 	uint64_t max_bpc;
 	struct wlr_drm_lease *lease;
 
+	// crtc
 	struct wlr_drm_crtc *crtc;
 	uint32_t possible_crtcs;
 
 	union wlr_drm_connector_props props;
 
+	// cursor
 	bool cursor_enabled;
 	int cursor_x, cursor_y;
 	int cursor_width, cursor_height;

@@ -341,6 +341,7 @@ static void xdg_surface_handle_surface_destroy(struct wl_listener *listener,
 struct wlr_xdg_surface *create_xdg_surface(
 		struct wlr_xdg_client *client, struct wlr_surface *wlr_surface,
 		uint32_t id) {
+	// new xdg_surface
 	struct wlr_xdg_surface *surface =
 		calloc(1, sizeof(struct wlr_xdg_surface));
 	if (surface == NULL) {
@@ -348,12 +349,13 @@ struct wlr_xdg_surface *create_xdg_surface(
 		return NULL;
 	}
 
+	// set
 	surface->client = client;
 	surface->role = WLR_XDG_SURFACE_ROLE_NONE;
 	surface->surface = wlr_surface;
 	surface->resource = wl_resource_create(client->client,
 		&xdg_surface_interface, wl_resource_get_version(client->resource),
-		id);
+		id); // create resource
 	if (surface->resource == NULL) {
 		free(surface);
 		wl_client_post_no_memory(client->client);
@@ -369,9 +371,11 @@ struct wlr_xdg_surface *create_xdg_surface(
 		return NULL;
 	}
 
+	// init list
 	wl_list_init(&surface->configure_list);
 	wl_list_init(&surface->popups);
 
+	// init signal
 	wl_signal_init(&surface->events.destroy);
 	wl_signal_init(&surface->events.ping_timeout);
 	wl_signal_init(&surface->events.new_popup);
@@ -380,6 +384,7 @@ struct wlr_xdg_surface *create_xdg_surface(
 	wl_signal_init(&surface->events.configure);
 	wl_signal_init(&surface->events.ack_configure);
 
+	// add signal
 	wl_signal_add(&surface->surface->events.destroy,
 		&surface->surface_destroy);
 	surface->surface_destroy.notify = xdg_surface_handle_surface_destroy;
@@ -393,6 +398,7 @@ struct wlr_xdg_surface *create_xdg_surface(
 	wl_resource_set_implementation(surface->resource,
 		&xdg_surface_implementation, surface,
 		xdg_surface_handle_resource_destroy);
+	// insert into surfaces in xdg_client
 	wl_list_insert(&client->surfaces, &surface->link);
 
 	return surface;

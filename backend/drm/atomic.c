@@ -51,7 +51,7 @@ struct atomic {
 static void atomic_begin(struct atomic *atom) {
 	memset(atom, 0, sizeof(*atom));
 
-	atom->req = drmModeAtomicAlloc();
+	atom->req = drmModeAtomicAlloc(); // RAW
 	if (!atom->req) {
 		wlr_log_errno(WLR_ERROR, "Allocation failed");
 		atom->failed = true;
@@ -66,7 +66,7 @@ static bool atomic_commit(struct atomic *atom,
 		return false;
 	}
 
-	int ret = drmModeAtomicCommit(drm->fd, atom->req, flags, drm);
+	int ret = drmModeAtomicCommit(drm->fd, atom->req, flags, drm); // RAW
 	if (ret != 0) {
 		wlr_drm_conn_log_errno(conn,
 			(flags & DRM_MODE_ATOMIC_TEST_ONLY) ? WLR_DEBUG : WLR_ERROR,
@@ -86,7 +86,7 @@ static void atomic_finish(struct atomic *atom) {
 }
 
 static void atomic_add(struct atomic *atom, uint32_t id, uint32_t prop, uint64_t val) {
-	if (!atom->failed && drmModeAtomicAddProperty(atom->req, id, prop, val) < 0) {
+	if (!atom->failed && drmModeAtomicAddProperty(atom->req, id, prop, val) < 0) { // RAW
 		wlr_log_errno(WLR_ERROR, "Failed to add atomic DRM property");
 		atom->failed = true;
 	}
@@ -101,7 +101,7 @@ static bool create_mode_blob(struct wlr_drm_backend *drm,
 	}
 
 	if (drmModeCreatePropertyBlob(drm->fd, &state->mode,
-			sizeof(drmModeModeInfo), blob_id)) {
+			sizeof(drmModeModeInfo), blob_id)) { // RAW
 		wlr_log_errno(WLR_ERROR, "Unable to create mode property blob");
 		return false;
 	}
@@ -132,7 +132,7 @@ static bool create_gamma_lut_blob(struct wlr_drm_backend *drm,
 	}
 
 	if (drmModeCreatePropertyBlob(drm->fd, gamma,
-			size * sizeof(struct drm_color_lut), blob_id) != 0) {
+			size * sizeof(struct drm_color_lut), blob_id) != 0) { // RAW
 		wlr_log_errno(WLR_ERROR, "Unable to create gamma LUT property blob");
 		free(gamma);
 		return false;
@@ -148,7 +148,7 @@ static void commit_blob(struct wlr_drm_backend *drm,
 		return;
 	}
 	if (*current != 0) {
-		drmModeDestroyPropertyBlob(drm->fd, *current);
+		drmModeDestroyPropertyBlob(drm->fd, *current); // RAW
 	}
 	*current = next;
 }
@@ -212,13 +212,17 @@ static bool atomic_crtc_commit(struct wlr_drm_connector *conn,
 	bool modeset = state->modeset;
 	bool active = state->active;
 
+	// 1. modesetting
 	uint32_t mode_id = crtc->mode_id;
 	if (modeset) {
+		// create modeinfo blob and set modeinfo into it
 		if (!create_mode_blob(drm, conn, state, &mode_id)) {
 			return false;
 		}
 	}
 
+
+	// 2. gamma lut 
 	uint32_t gamma_lut = crtc->gamma_lut;
 	if (state->base->committed & WLR_OUTPUT_STATE_GAMMA_LUT) {
 		// Fallback to legacy gamma interface when gamma properties are not
@@ -231,6 +235,7 @@ static bool atomic_crtc_commit(struct wlr_drm_connector *conn,
 				return false;
 			}
 		} else {
+			// create gamma lut blob
 			if (!create_gamma_lut_blob(drm, state->base->gamma_lut_size,
 					state->base->gamma_lut, &gamma_lut)) {
 				return false;
@@ -238,6 +243,7 @@ static bool atomic_crtc_commit(struct wlr_drm_connector *conn,
 		}
 	}
 
+	// 3. set damage
 	uint32_t fb_damage_clips = 0;
 	if ((state->base->committed & WLR_OUTPUT_STATE_DAMAGE) &&
 			pixman_region32_not_empty((pixman_region32_t *)&state->base->damage) &&
@@ -245,12 +251,14 @@ static bool atomic_crtc_commit(struct wlr_drm_connector *conn,
 		int rects_len;
 		const pixman_box32_t *rects = pixman_region32_rectangles(
 			(pixman_region32_t *)&state->base->damage, &rects_len);
+		// create damage clips blob with damage region
 		if (drmModeCreatePropertyBlob(drm->fd, rects,
-				sizeof(*rects) * rects_len, &fb_damage_clips) != 0) {
+				sizeof(*rects) * rects_len, &fb_damage_clips) != 0) { // RAW
 			wlr_log_errno(WLR_ERROR, "Failed to create FB_DAMAGE_CLIPS property blob");
 		}
 	}
 
+	// 4. enable VRR
 	bool prev_vrr_enabled =
 		output->adaptive_sync_status == WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED;
 	bool vrr_enabled = prev_vrr_enabled;
@@ -259,6 +267,8 @@ static bool atomic_crtc_commit(struct wlr_drm_connector *conn,
 		vrr_enabled = state->base->adaptive_sync_enabled;
 	}
 
+	// 5. IMPORTANT: atomic commit
+	// set atomic flags
 	if (test_only) {
 		flags |= DRM_MODE_ATOMIC_TEST_ONLY;
 	}
@@ -274,55 +284,73 @@ static bool atomic_crtc_commit(struct wlr_drm_connector *conn,
 	}
 
 	struct atomic atom;
+	// alloc atomic
 	atomic_begin(&atom);
+	// add atomic crtc prop
 	atomic_add(&atom, conn->id, conn->props.crtc_id, active ? crtc->id : 0);
 	if (modeset && active && conn->props.link_status != 0) {
+		// add link_statuc prop
 		atomic_add(&atom, conn->id, conn->props.link_status,
 			DRM_MODE_LINK_STATUS_GOOD);
 	}
+	// add content_type prop
 	if (active && conn->props.content_type != 0) {
 		atomic_add(&atom, conn->id, conn->props.content_type,
 			DRM_MODE_CONTENT_TYPE_GRAPHICS);
 	}
+	// add max_bpc prop
 	if (active && conn->props.max_bpc != 0 && conn->max_bpc > 0) {
 		atomic_add(&atom, conn->id, conn->props.max_bpc, conn->max_bpc);
 	}
+	// add mode_id prop
 	atomic_add(&atom, crtc->id, crtc->props.mode_id, mode_id);
+	// add active prop
 	atomic_add(&atom, crtc->id, crtc->props.active, active);
 	if (active) {
+		// add gamma_lut prop
 		if (crtc->props.gamma_lut != 0) {
 			atomic_add(&atom, crtc->id, crtc->props.gamma_lut, gamma_lut);
 		}
+		// add vrr_enabled prop
 		if (crtc->props.vrr_enabled != 0) {
 			atomic_add(&atom, crtc->id, crtc->props.vrr_enabled, vrr_enabled);
 		}
+		// add plane related props
 		set_plane_props(&atom, drm, crtc->primary, crtc->id, 0, 0);
+		// add fb_damage_clips prop
 		if (crtc->primary->props.fb_damage_clips != 0) {
 			atomic_add(&atom, crtc->primary->id,
 				crtc->primary->props.fb_damage_clips, fb_damage_clips);
 		}
+		// add cursor plane props
 		if (crtc->cursor) {
 			if (drm_connector_is_cursor_visible(conn)) {
 				set_plane_props(&atom, drm, crtc->cursor, crtc->id,
 					conn->cursor_x, conn->cursor_y);
 			} else {
+				// disable crtc cursor plane if there's no cursor
 				plane_disable(&atom, crtc->cursor);
 			}
 		}
 	} else {
+		// disable crtc primary plane if crtc isn't active
 		plane_disable(&atom, crtc->primary);
 		if (crtc->cursor) {
 			plane_disable(&atom, crtc->cursor);
 		}
 	}
 
+	// IMPORTANT
 	bool ok = atomic_commit(&atom, conn, flags);
 	atomic_finish(&atom);
 
+	// 6. cleanup
 	if (ok && !test_only) {
+		// update current blobs and destroy old blobs
 		commit_blob(drm, &crtc->mode_id, mode_id);
 		commit_blob(drm, &crtc->gamma_lut, gamma_lut);
 
+		// update vrr var
 		if (vrr_enabled != prev_vrr_enabled) {
 			output->adaptive_sync_status = vrr_enabled ?
 				WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED :
@@ -331,12 +359,14 @@ static bool atomic_crtc_commit(struct wlr_drm_connector *conn,
 				vrr_enabled ? "enabled" : "disabled");
 		}
 	} else {
+		// destroy next blobs
 		rollback_blob(drm, &crtc->mode_id, mode_id);
 		rollback_blob(drm, &crtc->gamma_lut, gamma_lut);
 	}
 
+	// destroy fb_damage_clips
 	if (fb_damage_clips != 0 &&
-			drmModeDestroyPropertyBlob(drm->fd, fb_damage_clips) != 0) {
+			drmModeDestroyPropertyBlob(drm->fd, fb_damage_clips) != 0) { // RAW
 		wlr_log_errno(WLR_ERROR, "Failed to destroy FB_DAMAGE_CLIPS property blob");
 	}
 

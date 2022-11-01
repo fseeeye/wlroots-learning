@@ -225,6 +225,7 @@ struct wlr_backend *wlr_drm_backend_create(struct wl_display *display,
 		wl_list_init(&drm->parent_destroy.link);
 	}
 
+	// dev signals
 	drm->dev_change.notify = handle_dev_change;
 	wl_signal_add(&dev->events.change, &drm->dev_change);
 
@@ -233,6 +234,7 @@ struct wlr_backend *wlr_drm_backend_create(struct wl_display *display,
 
 	drm->display = display;
 
+	// add drm fd for event_loop watching
 	struct wl_event_loop *event_loop = wl_display_get_event_loop(display);
 	drm->drm_event = wl_event_loop_add_fd(event_loop, drm->fd,
 		WL_EVENT_READABLE, handle_drm_event, drm);
@@ -241,19 +243,23 @@ struct wlr_backend *wlr_drm_backend_create(struct wl_display *display,
 		goto error_fd;
 	}
 
+	// session signals
 	drm->session_active.notify = handle_session_active;
 	wl_signal_add(&session->events.active, &drm->session_active);
 
+	// udev_hwdb
 	drm->hwdb = create_udev_hwdb();
 	if (!drm->hwdb) {
 		wlr_log(WLR_INFO, "Failed to load udev_hwdb, "
 			"falling back to PnP IDs instead of manufacturer names");
 	}
 
+	// check features
 	if (!check_drm_features(drm)) {
 		goto error_event;
 	}
 
+	// init drm resources
 	if (!init_drm_resources(drm)) {
 		goto error_event;
 	}

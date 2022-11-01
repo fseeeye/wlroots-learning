@@ -94,7 +94,8 @@ static void xdg_shell_bind(struct wl_client *wl_client, void *data,
 		uint32_t version, uint32_t id) {
 	struct wlr_xdg_shell *xdg_shell = data;
 	assert(wl_client && xdg_shell);
-
+	
+	// create xdg_wm_base resource in wlr_xdg_client
 	struct wlr_xdg_client *client =
 		calloc(1, sizeof(struct wlr_xdg_client));
 	if (client == NULL) {
@@ -116,8 +117,10 @@ static void xdg_shell_bind(struct wl_client *wl_client, void *data,
 
 	wl_resource_set_implementation(client->resource, &xdg_shell_impl, client,
 		xdg_client_handle_resource_destroy);
+	// insert wlr_xdg_client into xdg_shell clients list
 	wl_list_insert(&xdg_shell->clients, &client->link);
 
+	// set ping_timer in eventloop
 	struct wl_display *display = wl_client_get_display(client->client);
 	struct wl_event_loop *loop = wl_display_get_event_loop(display);
 	client->ping_timer = wl_event_loop_add_timer(loop,

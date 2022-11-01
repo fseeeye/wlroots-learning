@@ -201,12 +201,14 @@ struct wlr_buffer *wlr_buffer_from_resource(struct wl_resource *resource) {
 
 	struct wlr_buffer *buffer;
 	if (wl_shm_buffer_get(resource) != NULL) {
+		// get shm buffer
 		struct wlr_shm_client_buffer *shm_client_buffer =
 			shm_client_buffer_get_or_create(resource);
 		if (shm_client_buffer == NULL) {
 			wlr_log(WLR_ERROR, "Failed to create shm client buffer");
 			return NULL;
 		}
+		// lock
 		buffer = wlr_buffer_lock(&shm_client_buffer->base);
 	} else if (wlr_dmabuf_v1_resource_is_buffer(resource)) {
 		struct wlr_dmabuf_v1_buffer *dmabuf =
@@ -396,8 +398,8 @@ static struct wlr_shm_client_buffer *shm_client_buffer_get_or_create(
 		return buffer;
 	}
 
-	int32_t width = wl_shm_buffer_get_width(shm_buffer);
-	int32_t height = wl_shm_buffer_get_height(shm_buffer);
+	int32_t width = wl_shm_buffer_get_width(shm_buffer); // get width
+	int32_t height = wl_shm_buffer_get_height(shm_buffer); // get height
 
 	struct wlr_shm_client_buffer *buffer = calloc(1, sizeof(*buffer));
 	if (buffer == NULL) {
@@ -407,10 +409,11 @@ static struct wlr_shm_client_buffer *shm_client_buffer_get_or_create(
 	buffer->resource = resource;
 	buffer->shm_buffer = shm_buffer;
 
-	enum wl_shm_format wl_shm_format = wl_shm_buffer_get_format(shm_buffer);
+	enum wl_shm_format wl_shm_format = wl_shm_buffer_get_format(shm_buffer); // get format
 	buffer->format = convert_wl_shm_format_to_drm(wl_shm_format);
-	buffer->stride = wl_shm_buffer_get_stride(shm_buffer);
+	buffer->stride = wl_shm_buffer_get_stride(shm_buffer); // get stride
 
+	// set listeners
 	buffer->resource_destroy.notify = shm_client_buffer_resource_handle_destroy;
 	wl_resource_add_destroy_listener(resource, &buffer->resource_destroy);
 

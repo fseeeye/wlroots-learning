@@ -435,6 +435,7 @@ const struct wlr_surface_role xdg_toplevel_surface_role = {
 
 void create_xdg_toplevel(struct wlr_xdg_surface *surface,
 		uint32_t id) {
+	// set wl_surface role as xdg_toplevel
 	if (!wlr_surface_set_role(surface->surface, &xdg_toplevel_surface_role,
 			surface, surface->resource, XDG_WM_BASE_ERROR_ROLE)) {
 		return;
@@ -448,6 +449,7 @@ void create_xdg_toplevel(struct wlr_xdg_surface *surface,
 	}
 
 	assert(surface->toplevel == NULL);
+	// new toplevel in xdg_surface
 	surface->toplevel = calloc(1, sizeof(struct wlr_xdg_toplevel));
 	if (surface->toplevel == NULL) {
 		wl_resource_post_no_memory(surface->resource);
@@ -455,6 +457,7 @@ void create_xdg_toplevel(struct wlr_xdg_surface *surface,
 	}
 	surface->toplevel->base = surface;
 
+	// init signal
 	wl_signal_init(&surface->toplevel->events.request_maximize);
 	wl_signal_init(&surface->toplevel->events.request_fullscreen);
 	wl_signal_init(&surface->toplevel->events.request_minimize);
@@ -465,6 +468,7 @@ void create_xdg_toplevel(struct wlr_xdg_surface *surface,
 	wl_signal_init(&surface->toplevel->events.set_title);
 	wl_signal_init(&surface->toplevel->events.set_app_id);
 
+	// create xdg_toplevel resource 
 	surface->toplevel->resource = wl_resource_create(
 		surface->client->client, &xdg_toplevel_interface,
 		wl_resource_get_version(surface->resource), id);
@@ -478,6 +482,7 @@ void create_xdg_toplevel(struct wlr_xdg_surface *surface,
 		&xdg_toplevel_implementation, surface->toplevel,
 		xdg_toplevel_handle_resource_destroy);
 
+	// set xdg_surface role as toplevel
 	surface->role = WLR_XDG_SURFACE_ROLE_TOPLEVEL;
 }
 

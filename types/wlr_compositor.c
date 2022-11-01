@@ -43,6 +43,7 @@ static void surface_handle_attach(struct wl_client *client,
 		struct wl_resource *buffer_resource, int32_t dx, int32_t dy) {
 	struct wlr_surface *surface = wlr_surface_from_resource(resource);
 
+	// Check x & y when version is higher than 5.
 	if (wl_resource_get_version(resource) >= WL_SURFACE_OFFSET_SINCE_VERSION &&
 			(dx != 0 || dy != 0)) {
 		wl_resource_post_error(resource, WL_SURFACE_ERROR_INVALID_OFFSET,
@@ -51,6 +52,7 @@ static void surface_handle_attach(struct wl_client *client,
 		return;
 	}
 
+	// get buffer from buffer_resource
 	struct wlr_buffer *buffer = NULL;
 	if (buffer_resource != NULL) {
 		buffer = wlr_buffer_from_resource(buffer_resource);
@@ -60,13 +62,18 @@ static void surface_handle_attach(struct wl_client *client,
 		}
 	}
 
+	// mark surface has committed buffer
 	surface->pending.committed |= WLR_SURFACE_STATE_BUFFER;
 
+	// set to surface pending buffer
 	wlr_buffer_unlock(surface->pending.buffer);
 	surface->pending.buffer = buffer;
 
+	// set x & y if version
 	if (wl_resource_get_version(resource) < WL_SURFACE_OFFSET_SINCE_VERSION) {
+		// mark surface has committed offset
 		surface->pending.committed |= WLR_SURFACE_STATE_OFFSET;
+
 		surface->pending.dx = dx;
 		surface->pending.dy = dy;
 	}
@@ -174,8 +181,10 @@ static void surface_state_viewport_src_size(struct wlr_surface_state *state,
 }
 
 static void surface_finalize_pending(struct wlr_surface *surface) {
+	// get current wl_surface pending state
 	struct wlr_surface_state *pending = &surface->pending;
 
+	// check whether pending state has set buffer & set buffer size
 	if ((pending->committed & WLR_SURFACE_STATE_BUFFER)) {
 		if (pending->buffer != NULL) {
 			pending->buffer_width = pending->buffer->width;
@@ -185,6 +194,7 @@ static void surface_finalize_pending(struct wlr_surface *surface) {
 		}
 	}
 
+	// handle viewport
 	if (!pending->viewport.has_src &&
 			(pending->buffer_width % pending->scale != 0 ||
 			pending->buffer_height % pending->scale != 0)) {
@@ -428,6 +438,7 @@ static void surface_commit_state(struct wlr_surface *surface,
 		struct wlr_surface_state *next) {
 	assert(next->cached_state_locks == 0);
 
+	// do precommit operations
 	if (surface->role && surface->role->precommit) {
 		surface->role->precommit(surface, next);
 	}
@@ -447,6 +458,7 @@ static void surface_commit_state(struct wlr_surface *surface,
 			surface->current.width, surface->current.height);
 	}
 
+	// save current state to previous
 	surface->previous.scale = surface->current.scale;
 	surface->previous.transform = surface->current.transform;
 	surface->previous.width = surface->current.width;
@@ -454,8 +466,10 @@ static void surface_commit_state(struct wlr_surface *surface,
 	surface->previous.buffer_width = surface->current.buffer_width;
 	surface->previous.buffer_height = surface->current.buffer_height;
 
+	// move pending state to current state, clear pending state
 	surface_state_move(&surface->current, next);
 
+	// update damage & region
 	if (invalid_buffer) {
 		surface_apply_damage(surface);
 	}
@@ -491,6 +505,7 @@ static void surface_commit_state(struct wlr_surface *surface,
 		surface->role->commit(surface);
 	}
 
+	// send commit signal
 	wl_signal_emit_mutable(&surface->events.commit, surface);
 }
 
@@ -538,13 +553,18 @@ static void subsurface_parent_commit(struct wlr_subsurface *subsurface) {
 static void surface_handle_commit(struct wl_client *client,
 		struct wl_resource *resource) {
 	struct wlr_surface *surface = wlr_surface_from_resource(resource);
+	// adjust pending state according to present pending state  
 	surface_finalize_pending(surface);
 
+	// send client_commit signal
 	wl_signal_emit_mutable(&surface->events.client_commit, NULL);
 
+	// check whether pending state is locked
 	if (surface->pending.cached_state_locks > 0 || !wl_list_empty(&surface->cached)) {
+		// cache pending state if it's locked
 		surface_cache_pending(surface);
 	} else {
+		// commit pending state to current state
 		surface_commit_state(surface, &surface->pending);
 	}
 }
@@ -697,11 +717,13 @@ static void surface_handle_renderer_destroy(struct wl_listener *listener,
 
 static struct wlr_surface *surface_create(struct wl_client *client,
 		uint32_t version, uint32_t id, struct wlr_renderer *renderer) {
+	// new wlr_surface
 	struct wlr_surface *surface = calloc(1, sizeof(struct wlr_surface));
 	if (!surface) {
 		wl_client_post_no_memory(client);
 		return NULL;
 	}
+	// create surface resource
 	surface->resource = wl_resource_create(client, &wl_surface_interface,
 		version, id);
 	if (surface->resource == NULL) {
@@ -716,22 +738,26 @@ static struct wlr_surface *surface_create(struct wl_client *client,
 
 	surface->renderer = renderer;
 
+	// init surface state
 	surface_state_init(&surface->current);
 	surface_state_init(&surface->pending);
 	surface->pending.seq = 1;
 
+	// init signal
 	wl_signal_init(&surface->events.client_commit);
 	wl_signal_init(&surface->events.commit);
 	wl_signal_init(&surface->events.destroy);
 	wl_signal_init(&surface->events.new_subsurface);
 	wl_list_init(&surface->current_outputs);
 	wl_list_init(&surface->cached);
+	// init regions by pixman
 	pixman_region32_init(&surface->buffer_damage);
 	pixman_region32_init(&surface->external_damage);
 	pixman_region32_init(&surface->opaque_region);
 	pixman_region32_init(&surface->input_region);
 	wlr_addon_set_init(&surface->addons);
 
+	// set renderer destroy listener
 	wl_signal_add(&renderer->events.destroy, &surface->renderer_destroy);
 	surface->renderer_destroy.notify = surface_handle_renderer_destroy;
 
@@ -1163,11 +1189,13 @@ static void compositor_handle_display_destroy(
 
 struct wlr_compositor *wlr_compositor_create(struct wl_display *display,
 		struct wlr_renderer *renderer) {
+	// new compositor
 	struct wlr_compositor *compositor = calloc(1, sizeof(*compositor));
 	if (!compositor) {
 		return NULL;
 	}
 
+	// create wl_compositor global
 	compositor->global = wl_global_create(display, &wl_compositor_interface,
 		COMPOSITOR_VERSION, compositor, compositor_bind);
 	if (!compositor->global) {
@@ -1176,9 +1204,11 @@ struct wlr_compositor *wlr_compositor_create(struct wl_display *display,
 	}
 	compositor->renderer = renderer;
 
+	// init signals
 	wl_signal_init(&compositor->events.new_surface);
 	wl_signal_init(&compositor->events.destroy);
 
+	// set display_destroy listener
 	compositor->display_destroy.notify = compositor_handle_display_destroy;
 	wl_display_add_destroy_listener(display, &compositor->display_destroy);
 

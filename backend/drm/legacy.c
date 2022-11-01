@@ -72,6 +72,7 @@ static bool legacy_crtc_commit(struct wlr_drm_connector *conn,
 	struct wlr_drm_crtc *crtc = conn->crtc;
 	struct wlr_drm_plane *cursor = crtc->cursor;
 
+	// get fb_id
 	uint32_t fb_id = 0;
 	if (state->active) {
 		struct wlr_drm_fb *fb = plane_get_next_fb(crtc->primary);
@@ -83,6 +84,7 @@ static bool legacy_crtc_commit(struct wlr_drm_connector *conn,
 		fb_id = fb->id;
 	}
 
+	// 1. modesetting
 	if (state->modeset) {
 		uint32_t *conns = NULL;
 		size_t conns_len = 0;
@@ -93,21 +95,24 @@ static bool legacy_crtc_commit(struct wlr_drm_connector *conn,
 			mode = (drmModeModeInfo *)&state->mode;
 		}
 
+		// set dpms property
 		uint32_t dpms = state->active ? DRM_MODE_DPMS_ON : DRM_MODE_DPMS_OFF;
 		if (drmModeConnectorSetProperty(drm->fd, conn->id, conn->props.dpms,
-				dpms) != 0) {
+				dpms) != 0) { // RAW
 			wlr_drm_conn_log_errno(conn, WLR_ERROR,
 				"Failed to set DPMS property");
 			return false;
 		}
 
+		// set crtc mode with the given mode (start display)
 		if (drmModeSetCrtc(drm->fd, crtc->id, fb_id, 0, 0,
-				conns, conns_len, mode)) {
+				conns, conns_len, mode)) { // RAW
 			wlr_drm_conn_log_errno(conn, WLR_ERROR, "Failed to set CRTC");
 			return false;
 		}
 	}
 
+	// 2. set gamma lut
 	if (state->base->committed & WLR_OUTPUT_STATE_GAMMA_LUT) {
 		if (!drm_legacy_crtc_set_gamma(drm, crtc,
 				state->base->gamma_lut_size, state->base->gamma_lut)) {
@@ -115,11 +120,12 @@ static bool legacy_crtc_commit(struct wlr_drm_connector *conn,
 		}
 	}
 
+	// 3. enable VRR
 	if ((state->base->committed & WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED) &&
 			drm_connector_supports_vrr(conn)) {
 		if (drmModeObjectSetProperty(drm->fd, crtc->id, DRM_MODE_OBJECT_CRTC,
 				crtc->props.vrr_enabled,
-				state->base->adaptive_sync_enabled) != 0) {
+				state->base->adaptive_sync_enabled) != 0) { // RAW
 			wlr_drm_conn_log_errno(conn, WLR_ERROR,
 				"drmModeObjectSetProperty(VRR_ENABLED) failed");
 			return false;
@@ -131,6 +137,7 @@ static bool legacy_crtc_commit(struct wlr_drm_connector *conn,
 			state->base->adaptive_sync_enabled ? "enabled" : "disabled");
 	}
 
+	// 4. show cursor
 	if (cursor != NULL && drm_connector_is_cursor_visible(conn)) {
 		struct wlr_drm_fb *cursor_fb = plane_get_next_fb(cursor);
 		if (cursor_fb == NULL) {
@@ -138,7 +145,8 @@ static bool legacy_crtc_commit(struct wlr_drm_connector *conn,
 			return false;
 		}
 
-		drmModeFB *drm_fb = drmModeGetFB(drm->fd, cursor_fb->id);
+		// get cursor drmModeFB by id
+		drmModeFB *drm_fb = drmModeGetFB(drm->fd, cursor_fb->id); // RAW
 		if (drm_fb == NULL) {
 			wlr_drm_conn_log_errno(conn, WLR_DEBUG, "Failed to get cursor "
 				"BO handle: drmModeGetFB failed");
@@ -149,10 +157,12 @@ static bool legacy_crtc_commit(struct wlr_drm_connector *conn,
 		uint32_t cursor_height = drm_fb->height;
 		drmModeFreeFB(drm_fb);
 
+		// IMPORTANT: set cursor
 		int ret = drmModeSetCursor(drm->fd, crtc->id, cursor_handle,
-			cursor_width, cursor_height);
+			cursor_width, cursor_height); // RAW
 		int set_cursor_errno = errno;
-		if (drmCloseBufferHandle(drm->fd, cursor_handle) != 0) {
+		// close cursor handle from cursor fb
+		if (drmCloseBufferHandle(drm->fd, cursor_handle) != 0) { // RAW
 			wlr_log_errno(WLR_ERROR, "drmCloseBufferHandle failed");
 		}
 		if (ret != 0) {
@@ -161,21 +171,24 @@ static bool legacy_crtc_commit(struct wlr_drm_connector *conn,
 			return false;
 		}
 
+		// move cursor to correct pos
 		if (drmModeMoveCursor(drm->fd,
-			crtc->id, conn->cursor_x, conn->cursor_y) != 0) {
+			crtc->id, conn->cursor_x, conn->cursor_y) != 0) { // RAW
 			wlr_drm_conn_log_errno(conn, WLR_ERROR, "drmModeMoveCursor failed");
 			return false;
 		}
 	} else {
-		if (drmModeSetCursor(drm->fd, crtc->id, 0, 0, 0)) {
+		// set empty cursor
+		if (drmModeSetCursor(drm->fd, crtc->id, 0, 0, 0)) { // RAW
 			wlr_drm_conn_log_errno(conn, WLR_DEBUG, "drmModeSetCursor failed");
 			return false;
 		}
 	}
 
+	// 5. IMPORTANT: do page flip
 	if (flags & DRM_MODE_PAGE_FLIP_EVENT) {
 		if (drmModePageFlip(drm->fd, crtc->id, fb_id,
-				DRM_MODE_PAGE_FLIP_EVENT, drm)) {
+				DRM_MODE_PAGE_FLIP_EVENT, drm)) { // RAW
 			wlr_drm_conn_log_errno(conn, WLR_ERROR, "drmModePageFlip failed");
 			return false;
 		}
@@ -215,7 +228,7 @@ bool drm_legacy_crtc_set_gamma(struct wlr_drm_backend *drm,
 	}
 
 	uint16_t *r = lut, *g = lut + size, *b = lut + 2 * size;
-	if (drmModeCrtcSetGamma(drm->fd, crtc->id, size, r, g, b) != 0) {
+	if (drmModeCrtcSetGamma(drm->fd, crtc->id, size, r, g, b) != 0) { // RAW
 		wlr_log_errno(WLR_ERROR, "Failed to set gamma LUT on CRTC %"PRIu32,
 			crtc->id);
 		free(linear_lut);

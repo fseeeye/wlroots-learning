@@ -47,6 +47,7 @@ static void finish_buffer(struct wlr_drm_dumb_buffer *buf) {
 static struct wlr_drm_dumb_buffer *create_buffer(
 		struct wlr_drm_dumb_allocator *alloc, int width, int height,
 		const struct wlr_drm_format *format) {
+	// new drm dumb buffer
 	struct wlr_drm_dumb_buffer *buffer = calloc(1, sizeof(*buffer));
 	if (buffer == NULL) {
 		return NULL;
@@ -54,20 +55,22 @@ static struct wlr_drm_dumb_buffer *create_buffer(
 	wlr_buffer_init(&buffer->base, &buffer_impl, width, height);
 	wl_list_insert(&alloc->buffers, &buffer->link);
 
+	// get pixel format
 	const struct wlr_pixel_format_info *info =
 		drm_get_pixel_format_info(format->format);
-	if (info == NULL) {
+	if (info == NULL) { 
 		wlr_log(WLR_ERROR, "DRM format 0x%"PRIX32" not supported",
 			format->format);
 		goto create_err;
 	}
-
+	
+	// create DRM dumb buffer
 	struct drm_mode_create_dumb create = {0};
 	create.width = (uint32_t)width;
 	create.height = (uint32_t)height;
-	create.bpp = info->bpp;
+	create.bpp = info->bpp; // bits per pixel
 
-	if (drmIoctl(alloc->drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) != 0) {
+	if (drmIoctl(alloc->drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) != 0) { // RAW: create a dumb-buffer
 		wlr_log_errno(WLR_ERROR, "Failed to create DRM dumb buffer");
 		goto create_err;
 	}
@@ -76,21 +79,22 @@ static struct wlr_drm_dumb_buffer *create_buffer(
 	buffer->height = create.height;
 
 	buffer->stride = create.pitch;
-	buffer->handle = create.handle;
+	buffer->handle = create.handle; // GEM handle
 	buffer->format = format->format;
 
 	buffer->drm_fd = alloc->drm_fd;
 
+	// map the dumb buffer for userspace drawing
 	struct drm_mode_map_dumb map = {0};
 	map.handle = buffer->handle;
 
-	if (drmIoctl(alloc->drm_fd, DRM_IOCTL_MODE_MAP_DUMB, &map) != 0) {
+	if (drmIoctl(alloc->drm_fd, DRM_IOCTL_MODE_MAP_DUMB, &map) != 0) { // RAW: map DRM dumb buffer
 		wlr_log_errno(WLR_ERROR, "Failed to map DRM dumb buffer");
 		goto create_destroy;
 	}
 
 	buffer->data = mmap(NULL, create.size, PROT_READ | PROT_WRITE, MAP_SHARED,
-			alloc->drm_fd, map.offset);
+			alloc->drm_fd, map.offset); // mmap DRM bumb buffer
 	if (buffer->data == MAP_FAILED) {
 		wlr_log_errno(WLR_ERROR, "Failed to mmap DRM dumb buffer");
 		goto create_destroy;
@@ -100,13 +104,15 @@ static struct wlr_drm_dumb_buffer *create_buffer(
 
 	memset(buffer->data, 0, create.size);
 
+	// get PRIME handle(fd) from GEM handle
 	int prime_fd;
 	if (drmPrimeHandleToFD(alloc->drm_fd, buffer->handle, DRM_CLOEXEC,
-			&prime_fd) != 0) {
+			&prime_fd) != 0) { // RAW
 		wlr_log_errno(WLR_ERROR, "Failed to get PRIME handle from GEM handle");
 		goto create_destroy;
 	}
 
+	// set dmabuf in wlr_drm_dumb_buffer
 	buffer->dmabuf = (struct wlr_dmabuf_attributes){
 		.width = buffer->width,
 		.height = buffer->height,
@@ -203,13 +209,14 @@ static const struct wlr_allocator_interface allocator_impl = {
 };
 
 struct wlr_allocator *wlr_drm_dumb_allocator_create(int drm_fd) {
-	if (drmGetNodeTypeFromFd(drm_fd) != DRM_NODE_PRIMARY) {
+	if (drmGetNodeTypeFromFd(drm_fd) != DRM_NODE_PRIMARY) { // RAW
 		wlr_log(WLR_ERROR, "Cannot use DRM dumb buffers with non-primary DRM FD");
 		return NULL;
 	}
 
+	// check DRM DUMB Capability
 	uint64_t has_dumb = 0;
-	if (drmGetCap(drm_fd, DRM_CAP_DUMB_BUFFER, &has_dumb) < 0) {
+	if (drmGetCap(drm_fd, DRM_CAP_DUMB_BUFFER, &has_dumb) < 0) { // RAW
 		wlr_log(WLR_ERROR, "Failed to get DRM capabilities");
 		return NULL;
 	}

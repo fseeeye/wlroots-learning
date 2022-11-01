@@ -213,7 +213,7 @@ static uint32_t get_fb_for_bo(struct wlr_drm_backend *drm,
 	if (drm->addfb2_modifiers && dmabuf->modifier != DRM_FORMAT_MOD_INVALID) {
 		if (drmModeAddFB2WithModifiers(drm->fd, dmabuf->width, dmabuf->height,
 				dmabuf->format, handles, dmabuf->stride, dmabuf->offset,
-				modifiers, &id, DRM_MODE_FB_MODIFIERS) != 0) {
+				modifiers, &id, DRM_MODE_FB_MODIFIERS) != 0) { // RAW
 			wlr_log_errno(WLR_DEBUG, "drmModeAddFB2WithModifiers failed");
 		}
 	} else {
@@ -225,7 +225,7 @@ static uint32_t get_fb_for_bo(struct wlr_drm_backend *drm,
 		}
 
 		int ret = drmModeAddFB2(drm->fd, dmabuf->width, dmabuf->height,
-			dmabuf->format, handles, dmabuf->stride, dmabuf->offset, &id, 0);
+			dmabuf->format, handles, dmabuf->stride, dmabuf->offset, &id, 0); // RAW
 		if (ret != 0 && dmabuf->format == DRM_FORMAT_ARGB8888 &&
 				dmabuf->n_planes == 1 && dmabuf->offset[0] == 0) {
 			// Some big-endian machines don't support drmModeAddFB2. Try a
@@ -237,7 +237,7 @@ static uint32_t get_fb_for_bo(struct wlr_drm_backend *drm,
 			uint32_t depth = 32;
 			uint32_t bpp = 32;
 			ret = drmModeAddFB(drm->fd, dmabuf->width, dmabuf->height, depth,
-				bpp, dmabuf->stride[0], handles[0], &id);
+				bpp, dmabuf->stride[0], handles[0], &id); // RAW
 			if (ret != 0) {
 				wlr_log_errno(WLR_DEBUG, "drmModeAddFB failed");
 			}
@@ -268,7 +268,7 @@ static void close_all_bo_handles(struct wlr_drm_backend *drm,
 			continue;
 		}
 
-		if (drmCloseBufferHandle(drm->fd, handles[i]) != 0) {
+		if (drmCloseBufferHandle(drm->fd, handles[i]) != 0) { // RAW
 			wlr_log_errno(WLR_ERROR, "drmCloseBufferHandle failed");
 		}
 	}
@@ -343,14 +343,14 @@ static struct wlr_drm_fb *drm_fb_create(struct wlr_drm_backend *drm,
 
 	uint32_t handles[4] = {0};
 	for (int i = 0; i < attribs.n_planes; ++i) {
-		int ret = drmPrimeFDToHandle(drm->fd, attribs.fd[i], &handles[i]);
+		int ret = drmPrimeFDToHandle(drm->fd, attribs.fd[i], &handles[i]); // RAW
 		if (ret != 0) {
 			wlr_log_errno(WLR_DEBUG, "drmPrimeFDToHandle failed");
 			goto error_bo_handle;
 		}
 	}
 
-	fb->id = get_fb_for_bo(drm, &attribs, handles);
+	fb->id = get_fb_for_bo(drm, &attribs, handles); // AddFB
 	if (!fb->id) {
 		wlr_log(WLR_DEBUG, "Failed to import BO in KMS");
 		poison_buffer(drm, buf);

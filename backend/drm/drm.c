@@ -171,7 +171,7 @@ error:
 }
 
 static bool init_planes(struct wlr_drm_backend *drm) {
-	drmModePlaneRes *plane_res = drmModeGetPlaneResources(drm->fd);
+	drmModePlaneRes *plane_res = drmModeGetPlaneResources(drm->fd); // RAW
 	if (!plane_res) {
 		wlr_log_errno(WLR_ERROR, "Failed to get DRM plane resources");
 		return false;
@@ -182,7 +182,7 @@ static bool init_planes(struct wlr_drm_backend *drm) {
 	for (uint32_t i = 0; i < plane_res->count_planes; ++i) {
 		uint32_t id = plane_res->planes[i];
 
-		drmModePlane *plane = drmModeGetPlane(drm->fd, id);
+		drmModePlane *plane = drmModeGetPlane(drm->fd, id); // RAW
 		if (!plane) {
 			wlr_log_errno(WLR_ERROR, "Failed to get DRM plane");
 			goto error;
@@ -190,20 +190,20 @@ static bool init_planes(struct wlr_drm_backend *drm) {
 
 		union wlr_drm_plane_props props = {0};
 		if (!get_drm_plane_props(drm->fd, id, &props)) {
-			drmModeFreePlane(plane);
+			drmModeFreePlane(plane); // RAW
 			goto error;
 		}
 
 		uint64_t type;
 		if (!get_drm_prop(drm->fd, id, props.type, &type)) {
-			drmModeFreePlane(plane);
+			drmModeFreePlane(plane); // RAW
 			goto error;
 		}
 
 		// We don't really care about overlay planes, as we don't support them
 		// yet.
 		if (type == DRM_PLANE_TYPE_OVERLAY) {
-			drmModeFreePlane(plane);
+			drmModeFreePlane(plane); // RAW
 			continue;
 		}
 
@@ -223,23 +223,24 @@ static bool init_planes(struct wlr_drm_backend *drm) {
 			}
 		}
 		if (!crtc) {
-			drmModeFreePlane(plane);
+			drmModeFreePlane(plane); // RAW
 			continue;
 		}
 
+		// add plane
 		if (!add_plane(drm, crtc, plane, type, &props)) {
-			drmModeFreePlane(plane);
+			drmModeFreePlane(plane); // RAW
 			goto error;
 		}
 
-		drmModeFreePlane(plane);
+		drmModeFreePlane(plane); // RAW
 	}
 
-	drmModeFreePlaneResources(plane_res);
+	drmModeFreePlaneResources(plane_res); // RAW
 	return true;
 
 error:
-	drmModeFreePlaneResources(plane_res);
+	drmModeFreePlaneResources(plane_res); // RAW
 	return false;
 }
 
@@ -267,7 +268,7 @@ bool init_drm_resources(struct wlr_drm_backend *drm) {
 	for (size_t i = 0; i < drm->num_crtcs; ++i) {
 		struct wlr_drm_crtc *crtc = &drm->crtcs[i];
 		crtc->id = res->crtcs[i];
-		crtc->legacy_crtc = drmModeGetCrtc(drm->fd, crtc->id);
+		crtc->legacy_crtc = drmModeGetCrtc(drm->fd, crtc->id); // RAW
 		get_drm_crtc_props(drm->fd, crtc->id, &crtc->props);
 	}
 
@@ -322,6 +323,7 @@ static struct wlr_drm_connector *get_drm_connector_from_output(
 	return (struct wlr_drm_connector *)wlr_output;
 }
 
+// CORE
 static bool drm_crtc_commit(struct wlr_drm_connector *conn,
 		const struct wlr_drm_connector_state *state,
 		uint32_t flags, bool test_only) {
@@ -330,7 +332,7 @@ static bool drm_crtc_commit(struct wlr_drm_connector *conn,
 
 	struct wlr_drm_backend *drm = conn->backend;
 	struct wlr_drm_crtc *crtc = conn->crtc;
-	bool ok = drm->iface->crtc_commit(conn, state, flags, test_only);
+	bool ok = drm->iface->crtc_commit(conn, state, flags, test_only); // IMPORTANT
 	if (ok && !test_only) {
 		drm_fb_move(&crtc->primary->queued_fb, &crtc->primary->pending_fb);
 		if (crtc->cursor != NULL) {
@@ -365,6 +367,7 @@ static bool drm_crtc_page_flip(struct wlr_drm_connector *conn,
 
 	assert(state->active);
 	assert(plane_get_next_fb(crtc->primary));
+	// IMPORTANT
 	if (!drm_crtc_commit(conn, state, DRM_MODE_PAGE_FLIP_EVENT, false)) {
 		return false;
 	}
@@ -447,6 +450,7 @@ static bool drm_connector_set_pending_fb(struct wlr_drm_connector *conn,
 		local_buf = wlr_buffer_lock(state->buffer);
 	}
 
+	// 将 output buffer 推送到 DRM crtc 主plane 的 pending_fb 中，在下一次 page-flip 时提交到内核。
 	bool ok = drm_fb_import(&plane->pending_fb, drm, local_buf,
 		&crtc->primary->formats);
 	wlr_buffer_unlock(local_buf);
@@ -572,10 +576,12 @@ bool drm_connector_commit_state(struct wlr_drm_connector *conn,
 		return true;
 	}
 
+	// 由 output_state 初始化 drm_connector pending state
 	struct wlr_drm_connector_state pending = {0};
 	drm_connector_state_init(&pending, conn, base);
 
 	if (pending.active) {
+		// 为这次 commit 分配 crtc
 		if (!drm_connector_alloc_crtc(conn)) {
 			wlr_drm_conn_log(conn, WLR_ERROR,
 				"No CRTC available for this connector");
@@ -584,21 +590,25 @@ bool drm_connector_commit_state(struct wlr_drm_connector *conn,
 	}
 
 	if (pending.base->committed & WLR_OUTPUT_STATE_BUFFER) {
+		// buffer to fb of drm_connector pending state
 		if (!drm_connector_set_pending_fb(conn, pending.base)) {
 			return false;
 		}
 	}
 
 	if (pending.modeset) {
+		// do updating conn->output mode 
 		if (!drm_connector_set_mode(conn, &pending)) {
 			return false;
 		}
 	} else if (pending.base->committed & WLR_OUTPUT_STATE_BUFFER) {
+		// or do crtc page-flip and commit
 		if (!drm_crtc_page_flip(conn, &pending)) {
 			return false;
 		}
 	} else if (pending.base->committed & (WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED |
 			WLR_OUTPUT_STATE_GAMMA_LUT)) {
+		// or only do crtc commit state
 		assert(conn->crtc != NULL);
 		// TODO: maybe request a page-flip event here?
 		if (!drm_crtc_commit(conn, &pending, 0, false)) {
@@ -617,6 +627,7 @@ static bool drm_connector_commit(struct wlr_output *output,
 		return false;
 	}
 
+	// drm commit output state
 	return drm_connector_commit_state(conn, state);
 }
 
@@ -667,7 +678,7 @@ static bool drm_connector_alloc_crtc(struct wlr_drm_connector *conn) {
 
 	bool prev_desired_enabled = conn->desired_enabled;
 	conn->desired_enabled = true;
-	realloc_crtcs(conn->backend);
+	realloc_crtcs(conn->backend); // IMPORTANT
 	conn->desired_enabled = prev_desired_enabled;
 
 	return conn->crtc != NULL;
@@ -1048,6 +1059,7 @@ static void dealloc_crtc(struct wlr_drm_connector *conn) {
 	conn->crtc = NULL;
 }
 
+// realloc all drm connectors of one wlr_output
 static void realloc_crtcs(struct wlr_drm_backend *drm) {
 	assert(drm->num_crtcs > 0);
 
@@ -1168,7 +1180,8 @@ void scan_drm_connectors(struct wlr_drm_backend *drm,
 		wlr_log(WLR_INFO, "Scanning DRM connectors on %s", drm->name);
 	}
 
-	drmModeRes *res = drmModeGetResources(drm->fd);
+	// 1. get all of the resources associated with a graphic card.
+	drmModeRes *res = drmModeGetResources(drm->fd); // RAW
 	if (!res) {
 		wlr_log_errno(WLR_ERROR, "Failed to get DRM resources");
 		return;
@@ -1182,11 +1195,13 @@ void scan_drm_connectors(struct wlr_drm_backend *drm,
 	size_t new_outputs_len = 0;
 	struct wlr_drm_connector *new_outputs[res->count_connectors + 1];
 
+	// 2. traverse drm connectors
 	for (int i = 0; i < res->count_connectors; ++i) {
 		uint32_t conn_id = res->connectors[i];
 
 		ssize_t index = -1;
 		struct wlr_drm_connector *c, *wlr_conn = NULL;
+		// find whether current drm connectors is in outputs
 		wl_list_for_each(c, &drm->outputs, link) {
 			index++;
 			if (c->id == conn_id) {
@@ -1205,14 +1220,17 @@ void scan_drm_connectors(struct wlr_drm_backend *drm,
 			continue;
 		}
 
-		drmModeConnector *drm_conn = drmModeGetConnector(drm->fd, conn_id);
+		// get connector from conn_id in res
+		drmModeConnector *drm_conn = drmModeGetConnector(drm->fd, conn_id); // RAW
 		if (!drm_conn) {
 			wlr_log_errno(WLR_ERROR, "Failed to get DRM connector");
 			continue;
 		}
+		// get encoder
 		drmModeEncoder *curr_enc = drmModeGetEncoder(drm->fd,
-			drm_conn->encoder_id);
+			drm_conn->encoder_id); // RAW
 
+		// alloc if the new conn is not in old outputs
 		if (!wlr_conn) {
 			wlr_conn = calloc(1, sizeof(*wlr_conn));
 			if (!wlr_conn) {
@@ -1227,7 +1245,7 @@ void scan_drm_connectors(struct wlr_drm_backend *drm,
 			wlr_conn->id = drm_conn->connector_id;
 
 			const char *conn_name =
-				drmModeGetConnectorTypeName(drm_conn->connector_type);
+				drmModeGetConnectorTypeName(drm_conn->connector_type); // RAW
 			if (conn_name == NULL) {
 				conn_name = "Unknown";
 			}
@@ -1241,8 +1259,10 @@ void scan_drm_connectors(struct wlr_drm_backend *drm,
 			seen[index] = true;
 		}
 
+		// get crtc into the new wlr_drm_conn
 		if (curr_enc) {
 			for (size_t i = 0; i < drm->num_crtcs; ++i) {
+				// check if crtc_id in current_encoder whether is in drm->crtcs
 				if (drm->crtcs[i].id == curr_enc->crtc_id) {
 					wlr_conn->crtc = &drm->crtcs[i];
 					break;
@@ -1252,6 +1272,7 @@ void scan_drm_connectors(struct wlr_drm_backend *drm,
 			wlr_conn->crtc = NULL;
 		}
 
+		// check link status
 		// This can only happen *after* hotplug, since we haven't read the
 		// connector properties yet
 		if (wlr_conn->props.link_status != 0) {
@@ -1337,6 +1358,7 @@ void scan_drm_connectors(struct wlr_drm_backend *drm,
 
 			wlr_log(WLR_INFO, "Detected modes:");
 
+			// set modes
 			for (int i = 0; i < drm_conn->count_modes; ++i) {
 				struct wlr_drm_mode *mode = calloc(1, sizeof(*mode));
 				if (!mode) {
@@ -1366,7 +1388,7 @@ void scan_drm_connectors(struct wlr_drm_backend *drm,
 			}
 
 			wlr_conn->possible_crtcs =
-				drmModeConnectorGetPossibleCrtcs(drm->fd, drm_conn);
+				drmModeConnectorGetPossibleCrtcs(drm->fd, drm_conn); // RAW
 			if (wlr_conn->possible_crtcs == 0) {
 				wlr_drm_conn_log(wlr_conn, WLR_ERROR, "No CRTC possible");
 			}
@@ -1384,12 +1406,15 @@ void scan_drm_connectors(struct wlr_drm_backend *drm,
 			disconnect_drm_connector(wlr_conn);
 		}
 
+		// free encoder and connector resource, we only need crtc
 		drmModeFreeEncoder(curr_enc);
 		drmModeFreeConnector(drm_conn);
 	}
 
-	drmModeFreeResources(res);
+	// 3. clean up resources
+	drmModeFreeResources(res); // RAW
 
+	// 4. destroy all unseen drm connectors
 	// Iterate in reverse order because we'll remove items from the list and
 	// still want indices to remain correct.
 	struct wlr_drm_connector *conn, *tmp_conn;
@@ -1404,8 +1429,10 @@ void scan_drm_connectors(struct wlr_drm_backend *drm,
 		destroy_drm_connector(conn);
 	}
 
+	// 5. realloc all drm connectors
 	realloc_crtcs(drm);
 
+	// 6. emit newoutput signal to all output
 	for (size_t i = 0; i < new_outputs_len; ++i) {
 		struct wlr_drm_connector *conn = new_outputs[i];
 

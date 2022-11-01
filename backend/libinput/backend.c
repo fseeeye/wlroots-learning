@@ -85,6 +85,7 @@ static bool backend_start(struct wlr_backend *wlr_backend) {
 		get_libinput_backend_from_backend(wlr_backend);
 	wlr_log(WLR_DEBUG, "Starting libinput backend");
 
+	// create libinput context
 	backend->libinput_context = libinput_udev_create_context(&libinput_impl,
 		backend, backend->session->udev);
 	if (!backend->libinput_context) {
@@ -92,6 +93,7 @@ static bool backend_start(struct wlr_backend *wlr_backend) {
 		return false;
 	}
 
+	// assign seat
 	if (libinput_udev_assign_seat(backend->libinput_context,
 			backend->session->seat) != 0) {
 		wlr_log(WLR_ERROR, "Failed to assign libinput seat");
@@ -102,6 +104,7 @@ static bool backend_start(struct wlr_backend *wlr_backend) {
 	libinput_log_set_handler(backend->libinput_context, log_libinput);
 	libinput_log_set_priority(backend->libinput_context, LIBINPUT_LOG_PRIORITY_ERROR);
 
+	// get libinput fd
 	int libinput_fd = libinput_get_fd(backend->libinput_context);
 	char *no_devs = getenv("WLR_LIBINPUT_NO_DEVICES");
 	if (no_devs) {
@@ -118,6 +121,7 @@ static bool backend_start(struct wlr_backend *wlr_backend) {
 		}
 	}
 
+	// add fd to display eventloop
 	struct wl_event_loop *event_loop =
 		wl_display_get_event_loop(backend->display);
 	if (backend->input_event) {
