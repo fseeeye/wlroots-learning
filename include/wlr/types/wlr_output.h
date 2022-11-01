@@ -17,10 +17,19 @@
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/util/addon.h>
 
+enum wlr_output_mode_aspect_ratio {
+	WLR_OUTPUT_MODE_ASPECT_RATIO_NONE,
+	WLR_OUTPUT_MODE_ASPECT_RATIO_4_3,
+	WLR_OUTPUT_MODE_ASPECT_RATIO_16_9,
+	WLR_OUTPUT_MODE_ASPECT_RATIO_64_27,
+	WLR_OUTPUT_MODE_ASPECT_RATIO_256_135,
+};
+
 struct wlr_output_mode {
 	int32_t width, height;
 	int32_t refresh; // mHz
 	bool preferred;
+	enum wlr_output_mode_aspect_ratio picture_aspect_ratio;
 	struct wl_list link;
 };
 
@@ -45,7 +54,6 @@ struct wlr_output_cursor {
 enum wlr_output_adaptive_sync_status {
 	WLR_OUTPUT_ADAPTIVE_SYNC_DISABLED,
 	WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED,
-	WLR_OUTPUT_ADAPTIVE_SYNC_UNKNOWN, // requested, but maybe disabled
 };
 
 enum wlr_output_state_field {
@@ -71,6 +79,9 @@ enum wlr_output_state_mode_type {
  */
 struct wlr_output_state {
 	uint32_t committed; // enum wlr_output_state_field
+	// Set to true to allow temporary visual artifacts (e.g. black screen) while
+	// the update is being applied
+	bool allow_artifacts;
 	pixman_region32_t damage; // output-buffer-local coordinates
 	bool enabled;
 	float scale;
@@ -284,7 +295,13 @@ struct wlr_output_mode *wlr_output_preferred_mode(struct wlr_output *output);
 void wlr_output_set_mode(struct wlr_output *output,
 	struct wlr_output_mode *mode);
 /**
- * Sets a custom mode on the output. If modes are available, they are preferred.
+ * Sets a custom mode on the output.
+ *
+ * When the output advertises fixed modes, custom modes are not guaranteed to
+ * work correctly, they may result in visual artifacts. If a suitable fixed mode
+ * is available, compositors should prefer it and use wlr_output_set_mode()
+ * instead of custom modes.
+ *
  * Setting `refresh` to zero lets the backend pick a preferred value. The
  * output needs to be enabled.
  *
@@ -301,7 +318,10 @@ void wlr_output_set_transform(struct wlr_output *output,
 	enum wl_output_transform transform);
 /**
  * Enables or disables adaptive sync (ie. variable refresh rate) on this
- * output. This is just a hint, the backend is free to ignore this setting.
+ * output. On some backends, this is just a hint and may be ignored.
+ * Compositors can inspect `wlr_output.adaptive_sync_status` to query the
+ * effective status. Backends that don't support adaptive sync will reject
+ * the output commit.
  *
  * When enabled, compositors can submit frames a little bit later than the
  * deadline without dropping a frame.

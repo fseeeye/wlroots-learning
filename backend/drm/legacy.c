@@ -84,7 +84,7 @@ static bool legacy_crtc_commit(struct wlr_drm_connector *conn,
 		fb_id = fb->id;
 	}
 
-	// 1. modesetting
+	// NOTE: 1. modesetting
 	if (state->modeset) {
 		uint32_t *conns = NULL;
 		size_t conns_len = 0;
@@ -112,7 +112,7 @@ static bool legacy_crtc_commit(struct wlr_drm_connector *conn,
 		}
 	}
 
-	// 2. set gamma lut
+	// NOTE: 2. set gamma lut
 	if (state->base->committed & WLR_OUTPUT_STATE_GAMMA_LUT) {
 		if (!drm_legacy_crtc_set_gamma(drm, crtc,
 				state->base->gamma_lut_size, state->base->gamma_lut)) {
@@ -120,9 +120,11 @@ static bool legacy_crtc_commit(struct wlr_drm_connector *conn,
 		}
 	}
 
-	// 3. enable VRR
-	if ((state->base->committed & WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED) &&
-			drm_connector_supports_vrr(conn)) {
+	// NOTE: 3. enable VRR
+	if (state->base->committed & WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED) {
+		if (!drm_connector_supports_vrr(conn)) {
+			return false;
+		}
 		if (drmModeObjectSetProperty(drm->fd, crtc->id, DRM_MODE_OBJECT_CRTC,
 				crtc->props.vrr_enabled,
 				state->base->adaptive_sync_enabled) != 0) { // RAW
@@ -173,7 +175,7 @@ static bool legacy_crtc_commit(struct wlr_drm_connector *conn,
 
 		// move cursor to correct pos
 		if (drmModeMoveCursor(drm->fd,
-			crtc->id, conn->cursor_x, conn->cursor_y) != 0) { // RAW
+				crtc->id, conn->cursor_x, conn->cursor_y) != 0) { // RAW
 			wlr_drm_conn_log_errno(conn, WLR_ERROR, "drmModeMoveCursor failed");
 			return false;
 		}

@@ -4,6 +4,7 @@
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include "types/wlr_region.h"
+#include "types/wlr_subcompositor.h"
 
 #define SUBCOMPOSITOR_VERSION 1
 
@@ -329,6 +330,47 @@ static void subsurface_handle_surface_client_commit(
 	}
 }
 
+static void collect_damage_iter(struct wlr_surface *surface,
+		int sx, int sy, void *data) {
+	struct wlr_subsurface *subsurface = data;
+	pixman_region32_t *damage = &subsurface->parent->external_damage;
+	pixman_region32_union_rect(damage, damage,
+		subsurface->current.x + sx,
+		subsurface->current.y + sy,
+		surface->current.width, surface->current.height);
+}
+
+void subsurface_handle_parent_commit(struct wlr_subsurface *subsurface) {
+	struct wlr_surface *surface = subsurface->surface;
+
+	bool moved = subsurface->current.x != subsurface->pending.x ||
+		subsurface->current.y != subsurface->pending.y;
+	if (subsurface->mapped && moved) {
+		wlr_surface_for_each_surface(surface,
+			collect_damage_iter, subsurface);
+	}
+
+	if (subsurface->synchronized && subsurface->has_cache) {
+		wlr_surface_unlock_cached(surface, subsurface->cached_seq);
+		subsurface->has_cache = false;
+	}
+
+	subsurface->current.x = subsurface->pending.x;
+	subsurface->current.y = subsurface->pending.y;
+	if (subsurface->mapped && (moved || subsurface->reordered)) {
+		subsurface->reordered = false;
+		wlr_surface_for_each_surface(surface,
+			collect_damage_iter, subsurface);
+	}
+
+	if (!subsurface->added) {
+		subsurface->added = true;
+		wl_signal_emit_mutable(&subsurface->parent->events.new_subsurface,
+			subsurface);
+		subsurface_consider_map(subsurface, true);
+	}
+}
+
 static struct wlr_subsurface *subsurface_create(struct wlr_surface *surface,
 		struct wlr_surface *parent, uint32_t version, uint32_t id) {
 	struct wl_client *client = wl_resource_get_client(surface->resource);
@@ -372,8 +414,6 @@ static struct wlr_subsurface *subsurface_create(struct wlr_surface *surface,
 		&subsurface->pending.link);
 
 	surface->role_data = subsurface;
-
-	subsurface_consider_map(subsurface, true);
 
 	return subsurface;
 }

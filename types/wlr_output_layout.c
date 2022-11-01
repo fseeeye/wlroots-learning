@@ -365,6 +365,8 @@ void wlr_output_layout_closest_point(struct wlr_output_layout *layout,
 
 void wlr_output_layout_get_box(struct wlr_output_layout *layout,
 		struct wlr_output *reference, struct wlr_box *dest_box) {
+	memset(dest_box, 0, sizeof(*dest_box));
+
 	struct wlr_output_layout_output *l_output;
 	if (reference) {
 		// output extents
@@ -372,8 +374,6 @@ void wlr_output_layout_get_box(struct wlr_output_layout *layout,
 
 		if (l_output) {
 			output_layout_output_get_box(l_output, dest_box);
-		} else {
-			dest_box->width = dest_box->height = 0;
 		}
 	} else {
 		// layout extents
@@ -459,6 +459,10 @@ static struct wlr_output *wlr_output_layout_output_in_direction(
 
 	struct wlr_box ref_box;
 	wlr_output_layout_get_box(layout, reference, &ref_box);
+	if (wlr_box_empty(&ref_box)) {
+		// The output doesn't belong to the layout
+		return NULL;
+	}
 
 	double min_distance = (distance_method == NEAREST) ? DBL_MAX : DBL_MIN;
 	struct wlr_output *closest_output = NULL;

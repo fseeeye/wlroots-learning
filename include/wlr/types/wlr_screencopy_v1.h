@@ -11,6 +11,7 @@
 
 #include <stdbool.h>
 #include <wayland-server-core.h>
+#include <wlr/types/wlr_buffer.h>
 #include <wlr/util/box.h>
 
 struct wlr_screencopy_manager_v1 {
@@ -37,19 +38,16 @@ struct wlr_screencopy_frame_v1 {
 	struct wlr_screencopy_v1_client *client;
 	struct wl_list link; // wlr_screencopy_manager_v1.frames
 
-	enum wl_shm_format format;
-	uint32_t fourcc;
+	uint32_t shm_format, dmabuf_format; // DRM format codes
 	struct wlr_box box;
-	int stride;
+	int shm_stride;
 
 	bool overlay_cursor, cursor_locked;
 
 	bool with_damage;
 
-	struct wl_shm_buffer *shm_buffer;
-	struct wlr_dmabuf_v1_buffer *dma_buffer;
-
-	struct wl_listener buffer_destroy;
+	enum wlr_buffer_cap buffer_cap;
+	struct wlr_buffer *buffer;
 
 	struct wlr_output *output;
 	struct wl_listener output_commit;

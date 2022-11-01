@@ -17,6 +17,7 @@
 #include <xf86drmMode.h>
 
 #include "render/allocator/drm_dumb.h"
+#include "render/drm_format_set.h"
 #include "render/pixel_format.h"
 
 static const struct wlr_buffer_impl buffer_impl;
@@ -27,33 +28,15 @@ static struct wlr_drm_dumb_buffer *drm_dumb_buffer_from_buffer(
 	return (struct wlr_drm_dumb_buffer *)wlr_buf;
 }
 
-static void finish_buffer(struct wlr_drm_dumb_buffer *buf) {
-	if (buf->data) {
-		munmap(buf->data, buf->size);
-	}
-
-	wlr_dmabuf_attributes_finish(&buf->dmabuf);
-
-	if (buf->drm_fd >= 0) {
-		struct drm_mode_destroy_dumb destroy = { .handle = buf->handle };
-		if (drmIoctl(buf->drm_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy)) {
-			wlr_log_errno(WLR_ERROR, "Failed to destroy DRM dumb buffer");
-		}
-	}
-
-	wl_list_remove(&buf->link);
-}
-
 static struct wlr_drm_dumb_buffer *create_buffer(
 		struct wlr_drm_dumb_allocator *alloc, int width, int height,
 		const struct wlr_drm_format *format) {
-	// new drm dumb buffer
-	struct wlr_drm_dumb_buffer *buffer = calloc(1, sizeof(*buffer));
-	if (buffer == NULL) {
+	if (!wlr_drm_format_has(format, DRM_FORMAT_MOD_INVALID) &&
+			!wlr_drm_format_has(format, DRM_FORMAT_MOD_LINEAR)) {
+		wlr_log(WLR_ERROR, "DRM dumb allocator only supports INVALID and "
+			"LINEAR modifiers");
 		return NULL;
 	}
-	wlr_buffer_init(&buffer->base, &buffer_impl, width, height);
-	wl_list_insert(&alloc->buffers, &buffer->link);
 
 	// get pixel format
 	const struct wlr_pixel_format_info *info =
@@ -61,10 +44,18 @@ static struct wlr_drm_dumb_buffer *create_buffer(
 	if (info == NULL) { 
 		wlr_log(WLR_ERROR, "DRM format 0x%"PRIX32" not supported",
 			format->format);
-		goto create_err;
+		return NULL;
 	}
-	
+
 	// create DRM dumb buffer
+	struct wlr_drm_dumb_buffer *buffer = calloc(1, sizeof(*buffer));
+	if (buffer == NULL) {
+		return NULL;
+	}
+	wlr_buffer_init(&buffer->base, &buffer_impl, width, height);
+	wl_list_insert(&alloc->buffers, &buffer->link);
+
+	buffer->drm_fd = alloc->drm_fd;
 	struct drm_mode_create_dumb create = {0};
 	create.width = (uint32_t)width;
 	create.height = (uint32_t)height;
@@ -72,7 +63,7 @@ static struct wlr_drm_dumb_buffer *create_buffer(
 
 	if (drmIoctl(alloc->drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) != 0) { // RAW: create a dumb-buffer
 		wlr_log_errno(WLR_ERROR, "Failed to create DRM dumb buffer");
-		goto create_err;
+		goto create_destroy;
 	}
 
 	buffer->width = create.width;
@@ -82,9 +73,10 @@ static struct wlr_drm_dumb_buffer *create_buffer(
 	buffer->handle = create.handle; // GEM handle
 	buffer->format = format->format;
 
-	buffer->drm_fd = alloc->drm_fd;
+	// NOTE: drm_fd in buffer has been deleted
+	// buffer->drm_fd = alloc->drm_fd;
 
-	// map the dumb buffer for userspace drawing
+	// NOTE: map the dumb buffer for userspace drawing
 	struct drm_mode_map_dumb map = {0};
 	map.handle = buffer->handle;
 
@@ -117,7 +109,7 @@ static struct wlr_drm_dumb_buffer *create_buffer(
 		.width = buffer->width,
 		.height = buffer->height,
 		.format = format->format,
-		.modifier = DRM_FORMAT_MOD_INVALID,
+		.modifier = DRM_FORMAT_MOD_LINEAR,
 		.n_planes = 1,
 		.offset[0] = 0,
 		.stride[0] = buffer->stride,
@@ -130,9 +122,7 @@ static struct wlr_drm_dumb_buffer *create_buffer(
 	return buffer;
 
 create_destroy:
-	finish_buffer(buffer);
-create_err:
-	free(buffer);
+	wlr_buffer_drop(&buffer->base);
 	return NULL;
 }
 
@@ -158,7 +148,21 @@ static bool buffer_get_dmabuf(struct wlr_buffer *wlr_buffer,
 
 static void buffer_destroy(struct wlr_buffer *wlr_buffer) {
 	struct wlr_drm_dumb_buffer *buf = drm_dumb_buffer_from_buffer(wlr_buffer);
-	finish_buffer(buf);
+
+	if (buf->data) {
+		munmap(buf->data, buf->size);
+	}
+
+	wlr_dmabuf_attributes_finish(&buf->dmabuf);
+
+	if (buf->drm_fd >= 0) {
+		struct drm_mode_destroy_dumb destroy = { .handle = buf->handle };
+		if (drmIoctl(buf->drm_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy)) {
+			wlr_log_errno(WLR_ERROR, "Failed to destroy DRM dumb buffer");
+		}
+	}
+
+	wl_list_remove(&buf->link);
 	free(buf);
 }
 

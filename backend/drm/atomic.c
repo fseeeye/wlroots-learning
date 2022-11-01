@@ -262,8 +262,10 @@ static bool atomic_crtc_commit(struct wlr_drm_connector *conn,
 	bool prev_vrr_enabled =
 		output->adaptive_sync_status == WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED;
 	bool vrr_enabled = prev_vrr_enabled;
-	if ((state->base->committed & WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED) &&
-			drm_connector_supports_vrr(conn)) {
+	if ((state->base->committed & WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED)) {
+		if (!drm_connector_supports_vrr(conn)) {
+			return false;
+		}
 		vrr_enabled = state->base->adaptive_sync_enabled;
 	}
 
@@ -298,8 +300,8 @@ static bool atomic_crtc_commit(struct wlr_drm_connector *conn,
 		atomic_add(&atom, conn->id, conn->props.content_type,
 			DRM_MODE_CONTENT_TYPE_GRAPHICS);
 	}
-	// add max_bpc prop
-	if (active && conn->props.max_bpc != 0 && conn->max_bpc > 0) {
+	// NOTE: add max_bpc prop
+	if (modeset && active && conn->props.max_bpc != 0 && conn->max_bpc > 0) {
 		atomic_add(&atom, conn->id, conn->props.max_bpc, conn->max_bpc);
 	}
 	// add mode_id prop

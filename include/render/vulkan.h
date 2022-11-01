@@ -9,6 +9,7 @@
 #include <wlr/render/wlr_texture.h>
 #include <wlr/render/drm_format_set.h>
 #include <wlr/render/interface.h>
+#include <wlr/util/addon.h>
 
 struct wlr_vk_descriptor_pool;
 
@@ -16,10 +17,6 @@ struct wlr_vk_descriptor_pool;
 struct wlr_vk_instance {
 	VkInstance instance;
 	VkDebugUtilsMessengerEXT messenger;
-
-	// enabled extensions
-	size_t extension_count;
-	const char **extensions;
 
 	struct {
 		PFN_vkCreateDebugUtilsMessengerEXT createDebugUtilsMessengerEXT;
@@ -48,10 +45,6 @@ struct wlr_vk_device {
 
 	int drm_fd;
 
-	// enabled extensions
-	size_t extension_count;
-	const char **extensions;
-
 	// we only ever need one queue for rendering and transfer commands
 	uint32_t queue_family;
 	VkQueue queue;
@@ -76,10 +69,8 @@ struct wlr_vk_device {
 VkPhysicalDevice vulkan_find_drm_phdev(struct wlr_vk_instance *ini, int drm_fd);
 
 // Creates a device for the given instance and physical device.
-// Will try to enable the given extensions but not fail if they are not
-// available which can later be checked by the caller.
 struct wlr_vk_device *vulkan_device_create(struct wlr_vk_instance *ini,
-	VkPhysicalDevice phdev, size_t ext_count, const char **exts);
+	VkPhysicalDevice phdev);
 void vulkan_device_destroy(struct wlr_vk_device *dev);
 
 // Tries to find any memory bit for the given vulkan device that
@@ -138,6 +129,7 @@ struct wlr_vk_render_format_setup {
 // Renderer-internal represenation of an wlr_buffer imported for rendering.
 struct wlr_vk_render_buffer {
 	struct wlr_buffer *wlr_buffer;
+	struct wlr_addon addon;
 	struct wlr_vk_renderer *renderer;
 	struct wlr_vk_render_format_setup *render_setup;
 	struct wl_list link; // wlr_vk_renderer.buffers
@@ -148,8 +140,6 @@ struct wlr_vk_render_buffer {
 	uint32_t mem_count;
 	VkDeviceMemory memories[WLR_DMABUF_MAX_PLANES];
 	bool transitioned;
-
-	struct wl_listener buffer_destroy;
 };
 
 // Vulkan wlr_renderer implementation on top of a wlr_vk_device.
@@ -252,7 +242,7 @@ struct wlr_vk_texture {
 
 	// If imported from a wlr_buffer
 	struct wlr_buffer *buffer;
-	struct wl_listener buffer_destroy;
+	struct wlr_addon buffer_addon;
 };
 
 struct wlr_vk_texture *vulkan_get_texture(struct wlr_texture *wlr_texture);

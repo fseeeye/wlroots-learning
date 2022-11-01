@@ -4,6 +4,7 @@
 #include <wlr/interfaces/wlr_output.h>
 #include <wlr/render/interface.h>
 #include <wlr/util/log.h>
+#include <xf86drm.h>
 #include "backend/backend.h"
 #include "render/allocator/allocator.h"
 #include "render/drm_format_set.h"
@@ -70,8 +71,10 @@ static bool output_create_swapchain(struct wlr_output *output,
 		return true;
 	}
 
-	wlr_log(WLR_DEBUG, "Choosing primary buffer format 0x%"PRIX32" for output '%s'",
-		format->format, output->name);
+	char *format_name = drmGetFormatName(format->format);
+	wlr_log(WLR_DEBUG, "Choosing primary buffer format %s (0x%08"PRIX32") for output '%s'",
+		format_name ? format_name : "<unknown>", format->format, output->name);
+	free(format_name);
 
 	if (!allow_modifiers && (format->len != 1 || format->modifiers[0] != DRM_FORMAT_MOD_LINEAR)) {
 		if (!wlr_drm_format_has(format, DRM_FORMAT_MOD_INVALID)) {
@@ -138,17 +141,8 @@ void output_clear_back_buffer(struct wlr_output *output) {
 	output->back_buffer = NULL;
 }
 
-static bool output_attach_render(struct wlr_output *output,
-		struct wlr_output_state *state, int *buffer_age) {
-	if (!output_attach_back_buffer(output, state, buffer_age)) {
-		return false;
-	}
-	output_state_attach_buffer(state, output->back_buffer);
-	return true;
-}
-
 bool wlr_output_attach_render(struct wlr_output *output, int *buffer_age) {
-	return output_attach_render(output, &output->pending, buffer_age);
+	return output_attach_back_buffer(output, &output->pending, buffer_age);
 }
 
 static bool output_attach_empty_back_buffer(struct wlr_output *output,
@@ -172,7 +166,9 @@ static bool output_attach_empty_back_buffer(struct wlr_output *output,
 
 static bool output_test_with_back_buffer(struct wlr_output *output,
 		const struct wlr_output_state *state) {
-	assert(output->impl->test != NULL);
+	if (output->impl->test == NULL) {
+		return true;
+	}
 
 	// Create a shallow copy of the state with the empty back buffer included
 	// to pass to the backend.
@@ -192,6 +188,17 @@ bool output_ensure_buffer(struct wlr_output *output,
 		bool *new_back_buffer) {
 	assert(*new_back_buffer == false);
 
+	// If we already have a buffer, we don't need to allocate a new one
+	if (state->committed & WLR_OUTPUT_STATE_BUFFER) {
+		return true;
+	}
+
+	// If the compositor hasn't called wlr_output_init_render(), they will use
+	// their own logic to attach buffers
+	if (output->renderer == NULL) {
+		return true;
+	}
+
 	// If we're lighting up an output or changing its mode, make sure to
 	// provide a new buffer
 	bool needs_new_buffer = false;
@@ -204,13 +211,13 @@ bool output_ensure_buffer(struct wlr_output *output,
 	if (state->committed & WLR_OUTPUT_STATE_RENDER_FORMAT) {
 		needs_new_buffer = true;
 	}
-	if (!needs_new_buffer || (state->committed & WLR_OUTPUT_STATE_BUFFER)) {
-		return true;
+	if (state->allow_artifacts && output->commit_seq == 0) {
+		// On first commit, require a new buffer if the compositor called a
+		// mode-setting function, even if the mode won't change. This makes it
+		// so the swapchain is created now.
+		needs_new_buffer = true;
 	}
-
-	// If the backend doesn't necessarily need a new buffer on modeset, don't
-	// bother allocating one.
-	if (!output->impl->test || output->impl->test(output, state)) {
+	if (!needs_new_buffer) {
 		return true;
 	}
 
@@ -240,7 +247,7 @@ bool output_ensure_buffer(struct wlr_output *output,
 	}
 
 	if (!output_attach_empty_back_buffer(output, state)) {
-		return false;
+		goto error_destroy_swapchain;
 	}
 
 	if (output_test_with_back_buffer(output, state)) {
@@ -249,6 +256,13 @@ bool output_ensure_buffer(struct wlr_output *output,
 	}
 
 	output_clear_back_buffer(output);
+
+error_destroy_swapchain:
+	// Destroy the modifierless swapchain so that the output does not get stuck
+	// without modifiers. A new swapchain with modifiers will be created when
+	// needed by output_attach_back_buffer().
+	wlr_swapchain_destroy(output->swapchain);
+	output->swapchain = NULL;
 
 	return false;
 }
@@ -302,7 +316,7 @@ struct wlr_drm_format *output_pick_format(struct wlr_output *output,
 
 	if (format == NULL) {
 		wlr_log(WLR_DEBUG, "Failed to intersect display and render "
-			"modifiers for format 0x%"PRIX32 " on output '%s",
+			"modifiers for format 0x%"PRIX32 " on output %s",
 			fmt, output->name);
 		return NULL;
 	}
@@ -327,4 +341,19 @@ uint32_t wlr_output_preferred_read_format(struct wlr_output *output) {
 	output_clear_back_buffer(output);
 
 	return fmt;
+}
+
+bool output_is_direct_scanout(struct wlr_output *output,
+		struct wlr_buffer *buffer) {
+	if (output->swapchain == NULL) {
+		return true;
+	}
+
+	for (size_t i = 0; i < WLR_SWAPCHAIN_CAP; i++) {
+		if (output->swapchain->slots[i].buffer == buffer) {
+			return false;
+		}
+	}
+
+	return true;
 }

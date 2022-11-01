@@ -10,6 +10,7 @@
 #include "render/allocator/allocator.h"
 #include "render/swapchain.h"
 #include "types/wlr_output.h"
+#include "util/env.h"
 #include "util/global.h"
 
 #define OUTPUT_VERSION 4
@@ -214,6 +215,16 @@ void wlr_output_set_mode(struct wlr_output *output,
 
 void wlr_output_set_custom_mode(struct wlr_output *output, int32_t width,
 		int32_t height, int32_t refresh) {
+	// If there is a fixed mode which matches what the user wants, use that
+	struct wlr_output_mode *mode;
+	wl_list_for_each(mode, &output->modes, link) {
+		if (mode->width == width && mode->height == height &&
+				mode->refresh == refresh) {
+			wlr_output_set_mode(output, mode);
+			return;
+		}
+	}
+
 	wlr_output_state_set_custom_mode(&output->pending, width, height, refresh);
 }
 
@@ -366,11 +377,9 @@ void wlr_output_init(struct wlr_output *output, struct wlr_backend *backend,
 	wl_signal_init(&output->events.destroy);
 	output_state_init(&output->pending);
 
-	const char *no_hardware_cursors = getenv("WLR_NO_HARDWARE_CURSORS");
-	if (no_hardware_cursors != NULL && strcmp(no_hardware_cursors, "1") == 0) {
-		wlr_log(WLR_DEBUG,
-			"WLR_NO_HARDWARE_CURSORS set, forcing software cursors");
-		output->software_cursor_locks = 1;
+	output->software_cursor_locks = env_parse_bool("WLR_NO_HARDWARE_CURSORS");
+	if (output->software_cursor_locks) {
+		wlr_log(WLR_DEBUG, "WLR_NO_HARDWARE_CURSORS set, forcing software cursors");
 	}
 
 	wlr_addon_set_init(&output->addons);
@@ -576,7 +585,7 @@ static bool output_basic_test(struct wlr_output *output,
 			return false;
 		}
 
-		if (output->back_buffer == NULL) {
+		if (output_is_direct_scanout(output, state->buffer)) {
 			if (output->attach_render_locks > 0) {
 				wlr_log(WLR_DEBUG, "Direct scan-out disabled by lock");
 				return false;
@@ -701,7 +710,15 @@ bool wlr_output_test_state(struct wlr_output *output,
 }
 
 bool wlr_output_test(struct wlr_output *output) {
-	return wlr_output_test_state(output, &output->pending);
+	struct wlr_output_state state = output->pending;
+
+	if (output->back_buffer != NULL) {
+		assert((state.committed & WLR_OUTPUT_STATE_BUFFER) == 0);
+		state.committed |= WLR_OUTPUT_STATE_BUFFER;
+		state.buffer = output->back_buffer;
+	}
+
+	return wlr_output_test_state(output, &state);
 }
 
 bool wlr_output_commit_state(struct wlr_output *output,
@@ -715,21 +732,17 @@ bool wlr_output_commit_state(struct wlr_output *output,
 
 	if (!output_basic_test(output, &pending)) {
 		wlr_log(WLR_ERROR, "Basic output test failed for %s", output->name);
-		output_clear_back_buffer(output);
 		return false;
 	}
 
 	bool new_back_buffer = false;
 	if (!output_ensure_buffer(output, &pending, &new_back_buffer)) {
-		output_clear_back_buffer(output);
 		return false;
 	}
 	if (new_back_buffer) {
 		assert((pending.committed & WLR_OUTPUT_STATE_BUFFER) == 0);
-		pending.committed |= WLR_OUTPUT_STATE_BUFFER;
-		// Lock the buffer to ensure it stays valid past the
-		// output_clear_back_buffer() call below.
-		pending.buffer = wlr_buffer_lock(output->back_buffer);
+		output_state_attach_buffer(&pending, output->back_buffer);
+		output_clear_back_buffer(output);
 	}
 
 	if ((pending.committed & WLR_OUTPUT_STATE_BUFFER) &&
@@ -748,20 +761,8 @@ bool wlr_output_commit_state(struct wlr_output *output,
 	};
 	wl_signal_emit_mutable(&output->events.precommit, &pre_event);
 
-	// output_clear_back_buffer detaches the buffer from the renderer. This is
-	// important to do before calling impl->commit(), because this marks an
-	// implicit rendering synchronization point. The backend needs it to avoid
-	// displaying a buffer when asynchronous GPU work isn't finished.
-	struct wlr_buffer *back_buffer = NULL;
-	if ((pending.committed & WLR_OUTPUT_STATE_BUFFER) &&
-			output->back_buffer != NULL) {
-		back_buffer = wlr_buffer_lock(output->back_buffer);
-		output_clear_back_buffer(output);
-	}
-
-	// call commit impl
+	// NOTE: call commit impl
 	if (!output->impl->commit(output, &pending)) {
-		wlr_buffer_unlock(back_buffer);
 		if (new_back_buffer) {
 			wlr_buffer_unlock(pending.buffer);
 		}
@@ -827,8 +828,9 @@ bool wlr_output_commit_state(struct wlr_output *output,
 		output->needs_frame = false;
 	}
 
-	if (back_buffer != NULL) {
-		wlr_swapchain_set_buffer_submitted(output->swapchain, back_buffer);
+	if ((pending.committed & WLR_OUTPUT_STATE_BUFFER) &&
+			output->swapchain != NULL) {
+		wlr_swapchain_set_buffer_submitted(output->swapchain, pending.buffer);
 	}
 
 	struct wlr_output_event_commit event = {
@@ -839,7 +841,6 @@ bool wlr_output_commit_state(struct wlr_output *output,
 	};
 	wl_signal_emit_mutable(&output->events.commit, &event);
 
-	wlr_buffer_unlock(back_buffer);
 	if (new_back_buffer) {
 		wlr_buffer_unlock(pending.buffer);
 	}
@@ -851,6 +852,16 @@ bool wlr_output_commit(struct wlr_output *output) {
 	// Make sure the pending state is cleared before the output is committed
 	struct wlr_output_state state = {0};
 	output_state_move(&state, &output->pending);
+
+	// output_clear_back_buffer detaches the buffer from the renderer. This is
+	// important to do before calling impl->commit(), because this marks an
+	// implicit rendering synchronization point. The backend needs it to avoid
+	// displaying a buffer when asynchronous GPU work isn't finished.
+	if (output->back_buffer != NULL) {
+		output_state_attach_buffer(&state, output->back_buffer);
+		output_clear_back_buffer(output);
+	}
+
 	bool ok = wlr_output_commit_state(output, &state);
 	output_state_finish(&state);
 	return ok;
@@ -927,18 +938,22 @@ void wlr_output_send_present(struct wlr_output *output,
 
 void wlr_output_set_gamma(struct wlr_output *output, size_t size,
 		const uint16_t *r, const uint16_t *g, const uint16_t *b) {
+	uint16_t *gamma_lut = NULL;
+	if (size > 0) {
+		gamma_lut = malloc(3 * size * sizeof(uint16_t));
+		if (gamma_lut == NULL) {
+			wlr_log_errno(WLR_ERROR, "Allocation failed");
+			return;
+		}
+		memcpy(gamma_lut, r, size * sizeof(uint16_t));
+		memcpy(gamma_lut + size, g, size * sizeof(uint16_t));
+		memcpy(gamma_lut + 2 * size, b, size * sizeof(uint16_t));
+	}
+
 	output_state_clear_gamma_lut(&output->pending);
 
 	output->pending.gamma_lut_size = size;
-	output->pending.gamma_lut = malloc(3 * size * sizeof(uint16_t));
-	if (output->pending.gamma_lut == NULL) {
-		wlr_log_errno(WLR_ERROR, "Allocation failed");
-		return;
-	}
-	memcpy(output->pending.gamma_lut, r, size * sizeof(uint16_t));
-	memcpy(output->pending.gamma_lut + size, g, size * sizeof(uint16_t));
-	memcpy(output->pending.gamma_lut + 2 * size, b, size * sizeof(uint16_t));
-
+	output->pending.gamma_lut = gamma_lut;
 	output->pending.committed |= WLR_OUTPUT_STATE_GAMMA_LUT;
 }
 

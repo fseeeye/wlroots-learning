@@ -5,7 +5,7 @@
 #include <wlr/util/log.h>
 #include "wlr-output-management-unstable-v1-protocol.h"
 
-#define OUTPUT_MANAGER_VERSION 2
+#define OUTPUT_MANAGER_VERSION 4
 
 enum {
 	HEAD_STATE_ENABLED = 1 << 0,
@@ -13,24 +13,30 @@ enum {
 	HEAD_STATE_POSITION = 1 << 2,
 	HEAD_STATE_TRANSFORM = 1 << 3,
 	HEAD_STATE_SCALE = 1 << 4,
+	HEAD_STATE_ADAPTIVE_SYNC = 1 << 5,
 };
 
 static const uint32_t HEAD_STATE_ALL = HEAD_STATE_ENABLED | HEAD_STATE_MODE |
-	HEAD_STATE_POSITION | HEAD_STATE_TRANSFORM | HEAD_STATE_SCALE;
+	HEAD_STATE_POSITION | HEAD_STATE_TRANSFORM | HEAD_STATE_SCALE |
+	HEAD_STATE_ADAPTIVE_SYNC;
 
+static const struct zwlr_output_head_v1_interface head_impl;
 
 // Can return NULL if the head is inert
 static struct wlr_output_head_v1 *head_from_resource(
 		struct wl_resource *resource) {
 	assert(wl_resource_instance_of(resource,
-		&zwlr_output_head_v1_interface, NULL));
+		&zwlr_output_head_v1_interface, &head_impl));
 	return wl_resource_get_user_data(resource);
 }
 
+static const struct zwlr_output_mode_v1_interface output_mode_impl;
+
+// Can return NULL if the mode is inert
 static struct wlr_output_mode *mode_from_resource(
 		struct wl_resource *resource) {
 	assert(wl_resource_instance_of(resource,
-		&zwlr_output_mode_v1_interface, NULL));
+		&zwlr_output_mode_v1_interface, &output_mode_impl));
 	return wl_resource_get_user_data(resource);
 }
 
@@ -41,11 +47,15 @@ static void head_destroy(struct wlr_output_head_v1 *head) {
 	struct wl_resource *resource, *tmp;
 	wl_resource_for_each_safe(resource, tmp, &head->mode_resources) {
 		zwlr_output_mode_v1_send_finished(resource);
-		wl_resource_destroy(resource);
+		wl_list_remove(wl_resource_get_link(resource));
+		wl_list_init(wl_resource_get_link(resource));
+		wl_resource_set_user_data(resource, NULL);
 	}
 	wl_resource_for_each_safe(resource, tmp, &head->resources) {
 		zwlr_output_head_v1_send_finished(resource);
-		wl_resource_destroy(resource);
+		wl_list_remove(wl_resource_get_link(resource));
+		wl_list_init(wl_resource_get_link(resource));
+		wl_resource_set_user_data(resource, NULL);
 	}
 	wl_list_remove(&head->link);
 	wl_list_remove(&head->output_destroy.link);
@@ -127,6 +137,8 @@ struct wlr_output_configuration_head_v1 *
 	config_head->state.custom_mode.refresh = output->refresh;
 	config_head->state.transform = output->transform;
 	config_head->state.scale = output->scale;
+	config_head->state.adaptive_sync_enabled =
+		output->adaptive_sync_status == WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED;
 	return config_head;
 }
 
@@ -250,12 +262,36 @@ static void config_head_handle_set_scale(struct wl_client *client,
 	config_head->state.scale = scale;
 }
 
+static void config_head_handle_set_adaptive_sync(struct wl_client *client,
+		struct wl_resource *config_head_resource, uint32_t state) {
+	struct wlr_output_configuration_head_v1 *config_head =
+		config_head_from_resource(config_head_resource);
+	if (config_head == NULL) {
+		return;
+	}
+
+	switch (state) {
+	case ZWLR_OUTPUT_HEAD_V1_ADAPTIVE_SYNC_STATE_ENABLED:
+		config_head->state.adaptive_sync_enabled = true;
+		break;
+	case ZWLR_OUTPUT_HEAD_V1_ADAPTIVE_SYNC_STATE_DISABLED:
+		config_head->state.adaptive_sync_enabled = false;
+		break;
+	default:
+		wl_resource_post_error(config_head_resource,
+			ZWLR_OUTPUT_CONFIGURATION_HEAD_V1_ERROR_INVALID_ADAPTIVE_SYNC_STATE,
+			"client requested invalid adaptive sync state %ul", state);
+		break;
+	}
+}
+
 static const struct zwlr_output_configuration_head_v1_interface config_head_impl = {
 	.set_mode = config_head_handle_set_mode,
 	.set_custom_mode = config_head_handle_set_custom_mode,
 	.set_position = config_head_handle_set_position,
 	.set_transform = config_head_handle_set_transform,
 	.set_scale = config_head_handle_set_scale,
+	.set_adaptive_sync = config_head_handle_set_adaptive_sync,
 };
 
 static void config_head_handle_resource_destroy(struct wl_resource *resource) {
@@ -648,9 +684,18 @@ static void send_mode_state(struct wl_resource *mode_resource,
 	}
 }
 
-static void mode_handle_resource_destroy(struct wl_resource *resource) {
+static void output_mode_handle_resource_destroy(struct wl_resource *resource) {
 	wl_list_remove(wl_resource_get_link(resource));
 }
+
+static void output_mode_handle_release(struct wl_client *client,
+		struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+
+static const struct zwlr_output_mode_v1_interface output_mode_impl = {
+	.release = output_mode_handle_release,
+};
 
 static struct wl_resource *head_send_mode(struct wlr_output_head_v1 *head,
 		struct wl_resource *head_resource, struct wlr_output_mode *mode) {
@@ -662,8 +707,8 @@ static struct wl_resource *head_send_mode(struct wlr_output_head_v1 *head,
 		wl_resource_post_no_memory(head_resource);
 		return NULL;
 	}
-	wl_resource_set_implementation(mode_resource, NULL, mode,
-		mode_handle_resource_destroy);
+	wl_resource_set_implementation(mode_resource, &output_mode_impl, mode,
+		output_mode_handle_resource_destroy);
 	wl_list_insert(&head->mode_resources, wl_resource_get_link(mode_resource));
 
 	zwlr_output_head_v1_send_mode(head_resource, mode_resource);
@@ -733,11 +778,32 @@ static void head_send_state(struct wlr_output_head_v1 *head,
 		zwlr_output_head_v1_send_scale(head_resource,
 			wl_fixed_from_double(head->state.scale));
 	}
+
+	if ((state & HEAD_STATE_ADAPTIVE_SYNC) &&
+			wl_resource_get_version(head_resource) >=
+			ZWLR_OUTPUT_HEAD_V1_ADAPTIVE_SYNC_SINCE_VERSION) {
+		if (head->state.adaptive_sync_enabled) {
+			zwlr_output_head_v1_send_adaptive_sync(head_resource,
+				ZWLR_OUTPUT_HEAD_V1_ADAPTIVE_SYNC_STATE_ENABLED);
+		} else {
+			zwlr_output_head_v1_send_adaptive_sync(head_resource,
+				ZWLR_OUTPUT_HEAD_V1_ADAPTIVE_SYNC_STATE_DISABLED);
+		}
+	}
 }
 
 static void head_handle_resource_destroy(struct wl_resource *resource) {
 	wl_list_remove(wl_resource_get_link(resource));
 }
+
+static void head_handle_release(struct wl_client *client,
+		struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+
+static const struct zwlr_output_head_v1_interface head_impl = {
+	.release = head_handle_release,
+};
 
 static void manager_send_head(struct wlr_output_manager_v1 *manager,
 		struct wlr_output_head_v1 *head, struct wl_resource *manager_resource) {
@@ -751,7 +817,7 @@ static void manager_send_head(struct wlr_output_manager_v1 *manager,
 		wl_resource_post_no_memory(manager_resource);
 		return;
 	}
-	wl_resource_set_implementation(head_resource, NULL, head,
+	wl_resource_set_implementation(head_resource, &head_impl, head,
 		head_handle_resource_destroy);
 	wl_list_insert(&head->resources, wl_resource_get_link(head_resource));
 
@@ -816,6 +882,9 @@ static bool manager_update_head(struct wlr_output_manager_v1 *manager,
 	}
 	if (current->scale != next->scale) {
 		state |= HEAD_STATE_SCALE;
+	}
+	if (current->adaptive_sync_enabled != next->adaptive_sync_enabled) {
+		state |= HEAD_STATE_ADAPTIVE_SYNC;
 	}
 
 	// If  a mode was added to wlr_output.modes we need to add the new mode
@@ -927,4 +996,6 @@ void wlr_output_head_v1_state_apply(
 
 	wlr_output_state_set_scale(output_state, head_state->scale);
 	wlr_output_state_set_transform(output_state, head_state->transform);
+	wlr_output_state_set_adaptive_sync_enabled(output_state,
+		head_state->adaptive_sync_enabled);
 }

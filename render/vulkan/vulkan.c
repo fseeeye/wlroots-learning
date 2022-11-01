@@ -131,9 +131,9 @@ struct wlr_vk_instance *vulkan_instance_create(size_t ext_count,
 		return NULL;
 	}
 
-	bool debug_utils_found = false;
-	ini->extensions = calloc(1 + ext_count, sizeof(*ini->extensions));
-	if (!ini->extensions) {
+	size_t extensions_len = 0;
+	const char **extensions = calloc(1 + ext_count, sizeof(*extensions));
+	if (!extensions) {
 		wlr_log_errno(WLR_ERROR, "allocation failed");
 		goto error;
 	}
@@ -146,14 +146,15 @@ struct wlr_vk_instance *vulkan_instance_create(size_t ext_count,
 			continue;
 		}
 
-		ini->extensions[ini->extension_count++] = exts[i];
+		extensions[extensions_len++] = exts[i];
 	}
 
+	bool debug_utils_found = false;
 	if (debug) {
 		const char *name = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
 		if (find_extensions(avail_ext_props, avail_extc, &name, 1) == NULL) {
 			debug_utils_found = true;
-			ini->extensions[ini->extension_count++] = name;
+			extensions[extensions_len++] = name;
 		}
 	}
 
@@ -174,8 +175,8 @@ struct wlr_vk_instance *vulkan_instance_create(size_t ext_count,
 	VkInstanceCreateInfo instance_info = {0};
 	instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
 	instance_info.pApplicationInfo = &application_info;
-	instance_info.enabledExtensionCount = ini->extension_count;
-	instance_info.ppEnabledExtensionNames = ini->extensions;
+	instance_info.enabledExtensionCount = extensions_len;
+	instance_info.ppEnabledExtensionNames = extensions;
 	instance_info.enabledLayerCount = layer_count;
 	instance_info.ppEnabledLayerNames = layers;
 
@@ -208,6 +209,8 @@ struct wlr_vk_instance *vulkan_instance_create(size_t ext_count,
 		wlr_vk_error("Could not create instance", res);
 		goto error;
 	}
+
+	free(extensions);
 
 	// debug callback
 	if (debug_utils_found) {
@@ -247,7 +250,6 @@ void vulkan_instance_destroy(struct wlr_vk_instance *ini) {
 		vkDestroyInstance(ini->instance, NULL);
 	}
 
-	free(ini->extensions);
 	free(ini);
 }
 
@@ -391,7 +393,7 @@ VkPhysicalDevice vulkan_find_drm_phdev(struct wlr_vk_instance *ini, int drm_fd) 
 }
 
 struct wlr_vk_device *vulkan_device_create(struct wlr_vk_instance *ini,
-		VkPhysicalDevice phdev, size_t ext_count, const char **exts) {
+		VkPhysicalDevice phdev) {
 	VkResult res;
 
 	// check for extensions
@@ -426,44 +428,25 @@ struct wlr_vk_device *vulkan_device_create(struct wlr_vk_instance *ini,
 	dev->phdev = phdev;
 	dev->instance = ini;
 	dev->drm_fd = -1;
-	dev->extensions = calloc(16 + ext_count, sizeof(*ini->extensions));
-	if (!dev->extensions) {
-		wlr_log_errno(WLR_ERROR, "allocation failed");
-		goto error;
-	}
-
-	// find extensions
-	for (unsigned i = 0; i < ext_count; ++i) {
-		if (find_extensions(avail_ext_props, avail_extc, &exts[i], 1)) {
-			wlr_log(WLR_DEBUG, "vulkan device extension %s not found",
-				exts[i]);
-			continue;
-		}
-
-		dev->extensions[dev->extension_count++] = exts[i];
-	}
 
 	// For dmabuf import we require at least the external_memory_fd,
 	// external_memory_dma_buf, queue_family_foreign and
 	// image_drm_format_modifier extensions.
-	const char *names[] = {
+	const char *extensions[] = {
 		VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
 		VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME, // or vulkan 1.2
 		VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
 		VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
 		VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
 	};
+	size_t extensions_len = sizeof(extensions) / sizeof(extensions[0]);
 
-	unsigned nc = sizeof(names) / sizeof(names[0]);
-	const char *not_found = find_extensions(avail_ext_props, avail_extc, names, nc);
+	const char *not_found =
+		find_extensions(avail_ext_props, avail_extc, extensions, extensions_len);
 	if (not_found) {
 		wlr_log(WLR_ERROR, "vulkan: required device extension %s not found",
 			not_found);
 		goto error;
-	}
-
-	for (unsigned i = 0u; i < nc; ++i) {
-		dev->extensions[dev->extension_count++] = names[i];
 	}
 
 	// queue families
@@ -499,8 +482,8 @@ struct wlr_vk_device *vulkan_device_create(struct wlr_vk_instance *ini,
 	dev_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
 	dev_info.queueCreateInfoCount = 1u;
 	dev_info.pQueueCreateInfos = &qinfo;
-	dev_info.enabledExtensionCount = dev->extension_count;
-	dev_info.ppEnabledExtensionNames = dev->extensions;
+	dev_info.enabledExtensionCount = extensions_len;
+	dev_info.ppEnabledExtensionNames = extensions;
 
 	res = vkCreateDevice(phdev, &dev_info, NULL, &dev->dev);
 	if (res != VK_SUCCESS) {
@@ -530,6 +513,7 @@ struct wlr_vk_device *vulkan_device_create(struct wlr_vk_instance *ini,
 		goto error;
 	}
 
+	wlr_log(WLR_DEBUG, "Supported Vulkan formats:");
 	for (unsigned i = 0u; i < max_fmts; ++i) {
 		vulkan_format_props_query(dev, &fmts[i]);
 	}
@@ -561,7 +545,6 @@ void vulkan_device_destroy(struct wlr_vk_device *dev) {
 		vulkan_format_props_finish(&dev->format_props[i]);
 	}
 
-	free(dev->extensions);
 	free(dev->shm_formats);
 	free(dev->format_props);
 	free(dev);

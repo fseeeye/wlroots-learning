@@ -6,6 +6,7 @@
 #include <wlr/backend/session.h>
 #include <wlr/util/log.h>
 #include "backend/libinput.h"
+#include "util/env.h"
 
 static struct wlr_libinput_backend *get_libinput_backend_from_backend(
 		struct wlr_backend *wlr_backend) {
@@ -106,13 +107,8 @@ static bool backend_start(struct wlr_backend *wlr_backend) {
 
 	// get libinput fd
 	int libinput_fd = libinput_get_fd(backend->libinput_context);
-	char *no_devs = getenv("WLR_LIBINPUT_NO_DEVICES");
-	if (no_devs) {
-		if (strcmp(no_devs, "1") != 0) {
-			no_devs = NULL;
-		}
-	}
-	if (!no_devs && wl_list_empty(&backend->devices)) {
+
+	if (!env_parse_bool("WLR_LIBINPUT_NO_DEVICES") && wl_list_empty(&backend->devices)) {
 		handle_libinput_readable(libinput_fd, WL_EVENT_READABLE, backend);
 		if (wl_list_empty(&backend->devices)) {
 			wlr_log(WLR_ERROR, "libinput initialization failed, no input devices");

@@ -29,7 +29,10 @@
 static const uint32_t SUPPORTED_OUTPUT_STATE =
 	WLR_OUTPUT_STATE_BACKEND_OPTIONAL |
 	WLR_OUTPUT_STATE_BUFFER |
-	WLR_OUTPUT_STATE_MODE;
+	WLR_OUTPUT_STATE_MODE |
+	WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED;
+
+static size_t last_output_num = 0;
 
 static struct wlr_wl_output *get_wl_output_from_output(
 		struct wlr_output *wlr_output) {
@@ -105,12 +108,6 @@ static const struct wp_presentation_feedback_listener
 	.presented = presentation_feedback_handle_presented,
 	.discarded = presentation_feedback_handle_discarded,
 };
-
-static bool output_set_custom_mode(struct wlr_output *wlr_output,
-		int32_t width, int32_t height, int32_t refresh) {
-	wlr_output_update_custom_mode(wlr_output, width, height, 0);
-	return true;
-}
 
 void destroy_wl_buffer(struct wlr_wl_buffer *buffer) {
 	if (buffer == NULL) {
@@ -251,6 +248,16 @@ static bool output_test(struct wlr_output *wlr_output,
 		return false;
 	}
 
+	// Adaptive sync is effectively always enabled when using the Wayland
+	// backend. This is not something we have control over, so we set the state
+	// to enabled on creating the output and never allow changing it.
+	assert(wlr_output->adaptive_sync_status == WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED);
+	if (state->committed & WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED) {
+		if (!state->adaptive_sync_enabled) {
+			return false;
+		}
+	}
+
 	if (state->committed & WLR_OUTPUT_STATE_MODE) {
 		assert(state->mode_type == WLR_OUTPUT_STATE_MODE_CUSTOM);
 	}
@@ -273,12 +280,8 @@ static bool output_commit(struct wlr_output *wlr_output,
 	}
 
 	if (state->committed & WLR_OUTPUT_STATE_MODE) {
-		if (!output_set_custom_mode(wlr_output,
-				state->custom_mode.width,
-				state->custom_mode.height,
-				state->custom_mode.refresh)) {
-			return false;
-		}
+		wlr_output_update_custom_mode(wlr_output,
+			state->custom_mode.width, state->custom_mode.height, 0);
 	}
 
 	if (state->committed & WLR_OUTPUT_STATE_BUFFER) {
@@ -486,8 +489,9 @@ static void xdg_toplevel_handle_configure(void *data,
 	if (width == 0 || height == 0) {
 		return;
 	}
-	// loop over states for maximized etc?
-	output_set_custom_mode(&output->wlr_output, width, height, 0);
+
+	// TODO: loop over states for maximized etc?
+	wlr_output_update_custom_mode(&output->wlr_output, width, height, 0);
 }
 
 static void xdg_toplevel_handle_close(void *data,
@@ -521,13 +525,16 @@ struct wlr_output *wlr_wl_output_create(struct wlr_backend *wlr_backend) {
 
 	wlr_output_update_custom_mode(wlr_output, 1280, 720, 0);
 
+	wlr_output->adaptive_sync_status = WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED;
+
+	size_t output_num = ++last_output_num;
+
 	char name[64];
-	snprintf(name, sizeof(name), "WL-%zu", ++backend->last_output_num);
+	snprintf(name, sizeof(name), "WL-%zu", output_num);
 	wlr_output_set_name(wlr_output, name);
 
 	char description[128];
-	snprintf(description, sizeof(description),
-		"Wayland output %zu", backend->last_output_num);
+	snprintf(description, sizeof(description), "Wayland output %zu", output_num);
 	wlr_output_set_description(wlr_output, description);
 
 	output->backend = backend;

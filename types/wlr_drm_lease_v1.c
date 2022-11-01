@@ -126,6 +126,7 @@ static void drm_lease_device_v1_destroy(
 	}
 
 	wl_list_remove(&device->link);
+	wl_list_remove(&device->backend_destroy.link);
 	wlr_global_destroy_safe(device->global);
 
 	free(device);
@@ -153,12 +154,17 @@ static void lease_handle_destroy(struct wl_listener *listener, void *data) {
 
 struct wlr_drm_lease_v1 *wlr_drm_lease_request_v1_grant(
 		struct wlr_drm_lease_request_v1 *request) {
-	assert(request->lease);
-
+	assert(!request->invalid);
 	wlr_log(WLR_DEBUG, "Attempting to grant request %p", request);
 
-	struct wlr_drm_lease_v1 *lease = request->lease;
-	assert(!request->invalid);
+	struct wlr_drm_lease_v1 *lease = calloc(1, sizeof(*lease));
+	if (!lease) {
+		wl_resource_post_no_memory(request->resource);
+		return NULL;
+	}
+
+	lease->device = request->device;
+	lease->resource = request->lease_resource;
 
 	/* Transform connectors list into wlr_output for leasing */
 	struct wlr_output *outputs[request->n_connectors + 1];
@@ -191,6 +197,9 @@ struct wlr_drm_lease_v1 *wlr_drm_lease_request_v1_grant(
 	lease->destroy.notify = lease_handle_destroy;
 	wl_signal_add(&lease->drm_lease->events.destroy, &lease->destroy);
 
+	wl_list_insert(&lease->device->leases, &lease->link);
+	wl_resource_set_user_data(lease->resource, lease);
+
 	wlr_log(WLR_DEBUG, "Granting request %p", request);
 
 	wp_drm_lease_v1_send_lease_fd(lease->resource, fd);
@@ -201,12 +210,12 @@ struct wlr_drm_lease_v1 *wlr_drm_lease_request_v1_grant(
 
 void wlr_drm_lease_request_v1_reject(
 		struct wlr_drm_lease_request_v1 *request) {
-	assert(request && request->lease);
+	assert(request);
 
 	wlr_log(WLR_DEBUG, "Rejecting request %p", request);
 
 	request->invalid = true;
-	wp_drm_lease_v1_send_finished(request->lease->resource);
+	wp_drm_lease_v1_send_finished(request->lease_resource);
 }
 
 void wlr_drm_lease_v1_revoke(struct wlr_drm_lease_v1 *lease) {
@@ -313,12 +322,14 @@ static void drm_lease_request_v1_handle_submit(
 			drm_lease_request_v1_from_resource(resource);
 	if (!request) {
 		wlr_log(WLR_DEBUG, "Request has been destroyed");
+		wp_drm_lease_v1_send_finished(lease_resource);
 		return;
 	}
 
 	/* Pre-emptively reject invalid lease requests */
 	if (request->invalid) {
 		wlr_log(WLR_ERROR, "Invalid request");
+		wp_drm_lease_v1_send_finished(lease_resource);
 		return;
 	} else if (request->n_connectors == 0) {
 		wl_resource_post_error(lease_resource,
@@ -332,28 +343,20 @@ static void drm_lease_request_v1_handle_submit(
 		if (conn->active_lease) {
 			wlr_log(WLR_ERROR, "Failed to create lease, connector %s has "
 					"already been leased", conn->output->name);
+			wp_drm_lease_v1_send_finished(lease_resource);
 			return;
 		}
 	}
 
-	struct wlr_drm_lease_v1 *lease = calloc(1, sizeof(struct wlr_drm_lease_v1));
-	if (!lease) {
-		wlr_log(WLR_ERROR, "Failed to allocate wlr_drm_lease_v1");
-		wl_resource_post_no_memory(resource);
-		return;
-	}
+	request->lease_resource = lease_resource;
 
-	lease->device = request->device;
-	wl_list_insert(&lease->device->leases, &lease->link);
-
-	lease->resource = lease_resource;
-	wl_resource_set_user_data(lease_resource, lease);
-
-	request->lease = lease;
-
-	/* TODO: reject the request if the user does not grant it */
 	wl_signal_emit_mutable(&request->device->manager->events.request,
 			request);
+
+	/* If the compositor didn't act upon the request, reject it */
+	if (!request->invalid && wl_resource_get_user_data(lease_resource) == NULL) {
+		wlr_drm_lease_request_v1_reject(request);
+	}
 
 	/* Request is done */
 	wl_resource_destroy(resource);

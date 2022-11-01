@@ -26,7 +26,10 @@
 static const uint32_t SUPPORTED_OUTPUT_STATE =
 	WLR_OUTPUT_STATE_BACKEND_OPTIONAL |
 	WLR_OUTPUT_STATE_BUFFER |
-	WLR_OUTPUT_STATE_MODE;
+	WLR_OUTPUT_STATE_MODE |
+	WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED;
+
+static size_t last_output_num = 0;
 
 static void parse_xcb_setup(struct wlr_output *output,
 		xcb_connection_t *xcb) {
@@ -110,6 +113,17 @@ static bool output_test(struct wlr_output *wlr_output,
 		wlr_log(WLR_DEBUG, "Unsupported output state fields: 0x%"PRIx32,
 			unsupported);
 		return false;
+	}
+
+	// All we can do to influence adaptive sync on the X11 backend is set the
+	// _VARIABLE_REFRESH window property like mesa automatically does. We don't
+	// have any control beyond that, so we set the state to enabled on creating
+	// the output and never allow changing it (just like the Wayland backend).
+	assert(wlr_output->adaptive_sync_status == WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED);
+	if (state->committed & WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED) {
+		if (!state->adaptive_sync_enabled) {
+			return false;
+		}
 	}
 
 	if (state->committed & WLR_OUTPUT_STATE_MODE) {
@@ -334,21 +348,6 @@ static bool output_commit(struct wlr_output *wlr_output,
 		}
 	}
 
-	if (state->committed & WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED &&
-			x11->atoms.variable_refresh != XCB_ATOM_NONE) {
-		if (state->adaptive_sync_enabled) {
-			uint32_t enabled = 1;
-			xcb_change_property(x11->xcb, XCB_PROP_MODE_REPLACE, output->win,
-				x11->atoms.variable_refresh, XCB_ATOM_CARDINAL, 32, 1,
-				&enabled);
-			wlr_output->adaptive_sync_status = WLR_OUTPUT_ADAPTIVE_SYNC_UNKNOWN;
-		} else {
-			xcb_delete_property(x11->xcb, output->win,
-				x11->atoms.variable_refresh);
-			wlr_output->adaptive_sync_status = WLR_OUTPUT_ADAPTIVE_SYNC_DISABLED;
-		}
-	}
-
 	if (state->committed & WLR_OUTPUT_STATE_BUFFER) {
 		if (!output_commit_buffer(output, state)) {
 			return false;
@@ -410,7 +409,7 @@ static bool output_cursor_to_picture(struct wlr_x11_output *output,
 	}
 
 	bool result = wlr_renderer_read_pixels(
-		renderer, DRM_FORMAT_ARGB8888, NULL,
+		renderer, DRM_FORMAT_ARGB8888,
 		stride, buffer->width, buffer->height, 0, 0, 0, 0,
 		data);
 
@@ -521,15 +520,16 @@ struct wlr_output *wlr_x11_output_create(struct wlr_backend *backend) {
 
 	wlr_output_update_custom_mode(wlr_output, 1024, 768, 0);
 
+	size_t output_num = ++last_output_num;
+
 	char name[64];
-	snprintf(name, sizeof(name), "X11-%zu", ++x11->last_output_num);
+	snprintf(name, sizeof(name), "X11-%zu", output_num);
 	wlr_output_set_name(wlr_output, name);
 
 	parse_xcb_setup(wlr_output, x11->xcb);
 
 	char description[128];
-	snprintf(description, sizeof(description),
-		"X11 output %zu", x11->last_output_num);
+	snprintf(description, sizeof(description), "X11 output %zu", output_num);
 	wlr_output_set_description(wlr_output, description);
 
 	// The X11 protocol requires us to set a colormap and border pixel if the
@@ -572,6 +572,12 @@ struct wlr_output *wlr_x11_output_create(struct wlr_backend *backend) {
 	xcb_change_property(x11->xcb, XCB_PROP_MODE_REPLACE, output->win,
 		x11->atoms.wm_protocols, XCB_ATOM_ATOM, 32, 1,
 		&x11->atoms.wm_delete_window);
+
+	uint32_t enabled = 1;
+	xcb_change_property(x11->xcb, XCB_PROP_MODE_REPLACE, output->win,
+		x11->atoms.variable_refresh, XCB_ATOM_CARDINAL, 32, 1,
+		&enabled);
+	wlr_output->adaptive_sync_status = WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED;
 
 	wlr_x11_output_set_title(wlr_output, NULL);
 
